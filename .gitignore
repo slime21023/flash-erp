@@ -1,0 +1,10 @@
+node_modules/
+build/
+coverage/
+.env
+.env.*
+!.env.example
+.adonisjs/
+.ace/
+.vscode/
+*.log

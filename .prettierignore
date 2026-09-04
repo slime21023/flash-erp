@@ -1,0 +1,6 @@
+node_modules
+build
+coverage
+.adonisjs
+.ace
+package-lock.json

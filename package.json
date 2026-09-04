@@ -1,0 +1,52 @@
+{
+  "name": "flash-erp",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "license": "UNLICENSED",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "scripts": {
+    "dev": "node ace serve --hmr",
+    "build": "node ace build",
+    "test": "node ace test",
+    "test:unit": "node --import=@poppinss/ts-exec bin/test.ts",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "architecture:check": "node --import=@poppinss/ts-exec scripts/check_module_boundaries.ts"
+  },
+  "imports": {
+    "#platform/*": "./app/platform/*.js",
+    "#modules/*": "./app/modules/*.js",
+    "#config/*": "./config/*.js",
+    "#start/*": "./start/*.js",
+    "#tests/*": "./tests/*.js"
+  },
+  "dependencies": {
+    "@adonisjs/core": "^7.3.5",
+    "@adonisjs/lucid": "^22.0.0",
+    "@vinejs/vine": "^4.4.0",
+    "luxon": "^3.7.2",
+    "pg": "^8.16.3",
+    "reflect-metadata": "^0.2.2"
+  },
+  "devDependencies": {
+    "@adonisjs/assembler": "^8.4.0",
+    "@adonisjs/eslint-config": "^3.1.0",
+    "@adonisjs/prettier-config": "^1.5.0",
+    "@adonisjs/tsconfig": "^2.0.0",
+    "@japa/assert": "^4.2.0",
+    "@japa/runner": "^4.5.0",
+    "@poppinss/ts-exec": "^1.4.4",
+    "@types/luxon": "^3.7.5",
+    "@types/node": "^24.0.0",
+    "eslint": "^9.39.5",
+    "fast-check": "^4.9.0",
+    "prettier": "^3.7.4",
+    "typescript": "~5.8.3"
+  },
+  "prettier": "@adonisjs/prettier-config"
+}
