@@ -1,6 +1,7 @@
 export {
   DocumentNumberGenerator,
   InMemoryDocumentNumberGenerator,
+  InvalidNumberingDateError,
   InvalidNumberingConfigurationError,
   InvalidNumberingKeyError,
   PatternDocumentNumberGenerator,

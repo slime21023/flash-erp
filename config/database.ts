@@ -6,6 +6,13 @@ export default defineConfig({
   connections: {
     postgres: {
       client: 'pg',
+      migrations: {
+        paths: [
+          './database/migrations/modules/organization',
+          './database/migrations/modules/platform',
+          './database/migrations/modules/finance',
+        ],
+      },
       connection: {
         host: env.get('DB_HOST'),
         port: env.get('DB_PORT'),

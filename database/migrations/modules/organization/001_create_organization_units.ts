@@ -4,16 +4,11 @@ export default class extends BaseSchema {
   protected tableName = 'organization_units'
 
   async up() {
-    await this.schema.createTable(this.tableName, (table) => {
+    this.schema.createTable(this.tableName, (table) => {
       table.string('id', 64).primary()
       table.string('code', 64).notNullable().unique()
       table.string('name', 160).notNullable()
-      table
-        .enu('kind', ['COMPANY', 'PLANT', 'WAREHOUSE'], {
-          useNative: true,
-          enumName: 'organization_unit_kind',
-        })
-        .notNullable()
+      table.string('kind', 16).notNullable()
       table.string('parent_id', 64).nullable()
       table.foreign('parent_id').references('id').inTable(this.tableName).onDelete('RESTRICT')
       table.timestamp('created_at').notNullable()
@@ -21,11 +16,11 @@ export default class extends BaseSchema {
 
       table.index(['parent_id'])
       table.index(['kind'])
+      table.check("kind IN ('COMPANY', 'PLANT', 'WAREHOUSE')")
     })
   }
 
   async down() {
-    await this.schema.dropTable(this.tableName)
-    await this.schema.raw('DROP TYPE IF EXISTS organization_unit_kind')
+    this.schema.dropTable(this.tableName)
   }
 }

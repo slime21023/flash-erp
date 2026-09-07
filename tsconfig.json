@@ -17,9 +17,7 @@
     "commands/**/*.ts",
     "config/**/*.ts",
     "database/**/*.ts",
-    "scripts/**/*.ts",
     "start/**/*.ts",
-    "tests/**/*.ts",
     "adonisrc.ts"
   ],
   "exclude": ["node_modules", "build", "coverage"]

@@ -10,30 +10,17 @@ import {
 import type {
   OrganizationUnitKind,
   OrganizationUnitSnapshot,
+  RegisterOrganizationUnitError,
+  RegisterOrganizationUnitInput,
 } from '#modules/organization/contracts/index'
-
-export type RegisterOrganizationUnitInput = Readonly<{
-  id: string
-  code: string
-  name: string
-  kind: OrganizationUnitKind
-  parentId?: string | null
-}>
 
 export class InMemoryOrganizationService extends OrganizationContract {
   readonly #units = new Map<string, OrganizationUnitSnapshot>()
 
-  async register(
+  async registerUnit(
     input: RegisterOrganizationUnitInput,
     _options?: TransactionOptions
-  ): Promise<
-    Result<
-      OrganizationUnitSnapshot,
-      | InvalidOrganizationUnitError
-      | OrganizationUnitAlreadyExistsError
-      | OrganizationUnitNotFoundError
-    >
-  > {
+  ): Promise<Result<OrganizationUnitSnapshot, RegisterOrganizationUnitError>> {
     const id = input.id.trim()
     const code = input.code.trim().toUpperCase()
     const name = input.name.trim()
@@ -45,10 +32,17 @@ export class InMemoryOrganizationService extends OrganizationContract {
     if (this.#units.has(id)) {
       return err(new OrganizationUnitAlreadyExistsError(id))
     }
+    if ([...this.#units.values()].some((unit) => unit.code === code)) {
+      return err(new OrganizationUnitAlreadyExistsError(code, 'code'))
+    }
 
     const parentId = input.parentId?.trim() || null
-    if (parentId !== null && !this.#units.has(parentId)) {
+    const parent = parentId === null ? null : this.#units.get(parentId)
+    if (parentId !== null && !parent) {
       return err(new OrganizationUnitNotFoundError(parentId))
+    }
+    if (!InMemoryOrganizationService.isValidParent(input.kind, parent?.kind ?? null)) {
+      return err(new InvalidOrganizationUnitError('Organization unit kind has an invalid parent'))
     }
 
     const unit = Object.freeze({
@@ -68,5 +62,14 @@ export class InMemoryOrganizationService extends OrganizationContract {
   ): Promise<Result<OrganizationUnitSnapshot, OrganizationUnitNotFoundError>> {
     const unit = this.#units.get(id)
     return unit ? ok(unit) : err(new OrganizationUnitNotFoundError(id))
+  }
+
+  private static isValidParent(
+    kind: OrganizationUnitKind,
+    parentKind: OrganizationUnitKind | null
+  ): boolean {
+    if (kind === 'COMPANY') return parentKind === null
+    if (kind === 'PLANT') return parentKind === 'COMPANY'
+    return parentKind === 'PLANT'
   }
 }

@@ -11,8 +11,11 @@ export class InvalidOrganizationUnitError extends DomainError {
 export class OrganizationUnitAlreadyExistsError extends DomainError {
   readonly code = 'ORGANIZATION_UNIT_ALREADY_EXISTS'
 
-  constructor(readonly id: string) {
-    super(`Organization unit already exists: ${id}`)
+  constructor(
+    readonly identifier: string,
+    readonly field: 'id' | 'code' = 'id'
+  ) {
+    super(`Organization unit ${field} already exists: ${identifier}`)
   }
 }
 

@@ -47,7 +47,16 @@ export class JournalEntry {
   ) {
     this.#id = id
     this.#currency = currency
-    this.#lines = Object.freeze([...lines])
+    this.#lines = Object.freeze(
+      lines.map((line) =>
+        Object.freeze({
+          accountId: line.accountId,
+          debit: line.debit,
+          credit: line.credit,
+          ...(line.memo === undefined ? {} : { memo: line.memo }),
+        })
+      )
+    )
     this.#totalDebit = totalDebit
     this.#totalCredit = totalCredit
     Object.freeze(this)
@@ -127,7 +136,7 @@ export class JournalEntry {
   }
 
   get lines(): readonly JournalLine[] {
-    return this.#lines
+    return Object.freeze([...this.#lines])
   }
 
   get totalDebit(): Money {

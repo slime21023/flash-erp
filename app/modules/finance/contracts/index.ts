@@ -1,5 +1,13 @@
 export { FinanceContract } from './finance_contract.js'
-export { JournalEntryAlreadyPostedError } from './finance_errors.js'
+export { AccountContract } from './account_contract.js'
+export {
+  AccountAlreadyExistsError,
+  AccountNotFoundError,
+  InactiveAccountError,
+  InvalidAccountError,
+  JournalEntryAlreadyPostedError,
+} from './finance_errors.js'
+export type { AccountSnapshot, CreateAccountInput, NormalBalance } from './account_contract.js'
 export {
   InvalidJournalEntryError,
   JournalEntry,

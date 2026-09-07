@@ -19,6 +19,14 @@ export class InvalidNumberingConfigurationError extends DomainError {
   }
 }
 
+export class InvalidNumberingDateError extends DomainError {
+  readonly code = 'INVALID_NUMBERING_DATE'
+
+  constructor(readonly input: string) {
+    super(`Invalid numbering date: ${input}`)
+  }
+}
+
 export type NumberingOptions = TransactionOptions & {
   date?: Date | DateTime | string
   variables?: Record<string, string>
@@ -28,7 +36,12 @@ export abstract class DocumentNumberGenerator {
   abstract next(
     sequenceKey: string,
     options?: NumberingOptions
-  ): Promise<Result<string, InvalidNumberingKeyError | InvalidNumberingConfigurationError>>
+  ): Promise<
+    Result<
+      string,
+      InvalidNumberingKeyError | InvalidNumberingConfigurationError | InvalidNumberingDateError
+    >
+  >
 }
 
 export class InMemoryDocumentNumberGenerator extends DocumentNumberGenerator {
@@ -45,7 +58,12 @@ export class InMemoryDocumentNumberGenerator extends DocumentNumberGenerator {
   async next(
     sequenceKey: string,
     _options?: NumberingOptions
-  ): Promise<Result<string, InvalidNumberingKeyError | InvalidNumberingConfigurationError>> {
+  ): Promise<
+    Result<
+      string,
+      InvalidNumberingKeyError | InvalidNumberingConfigurationError | InvalidNumberingDateError
+    >
+  > {
     if (sequenceKey.trim().length === 0) {
       return err(new InvalidNumberingKeyError('Sequence key cannot be empty'))
     }
@@ -81,7 +99,12 @@ export class PatternDocumentNumberGenerator extends DocumentNumberGenerator {
   async next(
     sequenceKey: string,
     options?: NumberingOptions
-  ): Promise<Result<string, InvalidNumberingKeyError | InvalidNumberingConfigurationError>> {
+  ): Promise<
+    Result<
+      string,
+      InvalidNumberingKeyError | InvalidNumberingConfigurationError | InvalidNumberingDateError
+    >
+  > {
     const key = sequenceKey.trim()
     if (key.length === 0) {
       return err(new InvalidNumberingKeyError('Sequence key cannot be empty'))
@@ -95,7 +118,15 @@ export class PatternDocumentNumberGenerator extends DocumentNumberGenerator {
       )
     }
 
-    const date = PatternDocumentNumberGenerator.resolveDate(options?.date)
+    if (this.#prefix.length === 0) {
+      return err(new InvalidNumberingConfigurationError('Numbering prefix cannot be empty'))
+    }
+
+    const dateResult = PatternDocumentNumberGenerator.resolveDate(options?.date)
+    if (dateResult.isErr) {
+      return err(dateResult.error)
+    }
+    const date = dateResult.value
     const yyyy = date.toFormat('yyyy')
     const yy = date.toFormat('yy')
     const mm = date.toFormat('LL')
@@ -109,6 +140,11 @@ export class PatternDocumentNumberGenerator extends DocumentNumberGenerator {
 
     const seqMatch = /{SEQ(?::(\d+))?}/.exec(this.#pattern)
     const padding = seqMatch?.[1] ? Number.parseInt(seqMatch[1], 10) : 6
+    if (!Number.isSafeInteger(padding) || padding < 1 || padding > 32) {
+      return err(
+        new InvalidNumberingConfigurationError('Sequence padding must be between 1 and 32')
+      )
+    }
     const formattedSeq = nextSeq.toString().padStart(padding, '0')
 
     let result = this.#pattern
@@ -128,17 +164,22 @@ export class PatternDocumentNumberGenerator extends DocumentNumberGenerator {
     return ok(result)
   }
 
-  private static resolveDate(input?: Date | DateTime | string): DateTime {
+  private static resolveDate(
+    input?: Date | DateTime | string
+  ): Result<DateTime, InvalidNumberingDateError> {
     if (!input) {
-      return DateTime.utc()
+      return ok(DateTime.utc())
     }
     if (input instanceof DateTime) {
-      return input.toUTC()
+      return input.isValid
+        ? ok(input.toUTC())
+        : err(new InvalidNumberingDateError(input.invalidReason ?? 'Invalid DateTime'))
     }
     if (input instanceof Date) {
-      return DateTime.fromJSDate(input, { zone: 'utc' })
+      const parsed = DateTime.fromJSDate(input, { zone: 'utc' })
+      return parsed.isValid ? ok(parsed) : err(new InvalidNumberingDateError(input.toString()))
     }
     const parsed = DateTime.fromISO(input, { zone: 'utc' })
-    return parsed.isValid ? parsed : DateTime.utc()
+    return parsed.isValid ? ok(parsed) : err(new InvalidNumberingDateError(input))
   }
 }

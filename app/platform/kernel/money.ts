@@ -246,9 +246,11 @@ export class Money {
 
   format(fractionDigits = 2): string {
     const divisor = 10n ** BigInt(fractionDigits)
-    const whole = this.#minorUnits / divisor
-    const fraction = (this.#minorUnits % divisor).toString().padStart(fractionDigits, '0')
-    return `${whole}.${fraction} ${this.#currency}`
+    const absoluteMinorUnits = this.#minorUnits < 0n ? -this.#minorUnits : this.#minorUnits
+    const whole = absoluteMinorUnits / divisor
+    const fraction = (absoluteMinorUnits % divisor).toString().padStart(fractionDigits, '0')
+    const sign = this.#minorUnits < 0n ? '-' : ''
+    return `${sign}${whole}.${fraction} ${this.#currency}`
   }
 
   toJSON(): { minorUnits: string; currency: string } {

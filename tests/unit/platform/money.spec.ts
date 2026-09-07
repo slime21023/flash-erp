@@ -90,3 +90,15 @@ test('Money comparison and formatting behave consistently', () => {
     assert.equal(m100.value.format(), '100.00 TWD')
   }
 })
+
+test('Money formats negative minor units with a single leading sign', () => {
+  const negativeFraction = Money.fromMinorUnits(-50n, 'TWD')
+  const negativeWhole = Money.fromMinorUnits(-150n, 'TWD')
+  assert.equal(negativeFraction.isOk, true)
+  assert.equal(negativeWhole.isOk, true)
+
+  if (negativeFraction.isOk && negativeWhole.isOk) {
+    assert.equal(negativeFraction.value.format(), '-0.50 TWD')
+    assert.equal(negativeWhole.value.format(), '-1.50 TWD')
+  }
+})

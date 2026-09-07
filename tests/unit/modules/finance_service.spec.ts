@@ -61,3 +61,24 @@ test('finance service rejects duplicate journal entries with Result.err', async 
     }
   }
 })
+
+test('journal entries defensively copy and freeze their lines', () => {
+  const amount = Money.fromMinorUnits(100n, 'TWD')
+  const zero = Money.fromMinorUnits(0n, 'TWD')
+  assert.equal(amount.isOk, true)
+  assert.equal(zero.isOk, true)
+  if (amount.isErr || zero.isErr) return
+
+  const lines: JournalLine[] = [
+    { accountId: 'cash', debit: amount.value, credit: zero.value },
+    { accountId: 'revenue', debit: zero.value, credit: amount.value },
+  ]
+  const entry = JournalEntry.create('entry-immutable', lines)
+  assert.equal(entry.isOk, true)
+  if (entry.isErr) return
+
+  lines[0]!.accountId = 'mutated-cash'
+  assert.equal(entry.value.lines[0]?.accountId, 'cash')
+  assert.equal(Object.isFrozen(entry.value.lines), true)
+  assert.equal(Object.isFrozen(entry.value.lines[0]), true)
+})

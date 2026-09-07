@@ -3,6 +3,7 @@ import fc from 'fast-check'
 import {
   InMemoryDocumentNumberGenerator,
   InvalidNumberingConfigurationError,
+  InvalidNumberingDateError,
   InvalidNumberingKeyError,
   PatternDocumentNumberGenerator,
 } from '#platform/numbering/index'
@@ -34,6 +35,28 @@ test('document numbers are monotonic per sequence key', async () => {
     ),
     { numRuns: 1000 }
   )
+})
+
+test('PatternDocumentNumberGenerator rejects invalid dates and empty prefixes', async () => {
+  const generator = new PatternDocumentNumberGenerator({
+    pattern: '{PREFIX}-{YYYY}-{SEQ:4}',
+    prefix: 'INV',
+  })
+  const invalidDate = await generator.next('invoice', { date: 'not-a-date' })
+  assert.equal(invalidDate.isErr, true)
+  if (invalidDate.isErr) {
+    assert.equal(invalidDate.error instanceof InvalidNumberingDateError, true)
+  }
+
+  const emptyPrefix = new PatternDocumentNumberGenerator({
+    pattern: '{PREFIX}-{SEQ:4}',
+    prefix: ' ',
+  })
+  const result = await emptyPrefix.next('invoice')
+  assert.equal(result.isErr, true)
+  if (result.isErr) {
+    assert.equal(result.error instanceof InvalidNumberingConfigurationError, true)
+  }
 })
 
 test('PatternDocumentNumberGenerator preserves format and period monotonicity', async () => {

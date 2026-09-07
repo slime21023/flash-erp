@@ -4,7 +4,7 @@ import { InMemoryOrganizationService } from '#modules/organization/services/in_m
 
 test('organization service registers and resolves an organization unit', async () => {
   const service = new InMemoryOrganizationService()
-  const created = await service.register({
+  const created = await service.registerUnit({
     id: 'company-001',
     code: ' acme ',
     name: 'Acme Corporation',
@@ -23,7 +23,7 @@ test('organization service registers and resolves an organization unit', async (
 
 test('organization service returns a Result error for a missing parent', async () => {
   const service = new InMemoryOrganizationService()
-  const result = await service.register({
+  const result = await service.registerUnit({
     id: 'plant-001',
     code: 'plant-001',
     name: 'Main Plant',
@@ -34,5 +34,39 @@ test('organization service returns a Result error for a missing parent', async (
   assert.equal(result.isErr, true)
   if (result.isErr) {
     assert.equal(result.error.code, 'ORGANIZATION_UNIT_NOT_FOUND')
+  }
+})
+
+test('organization service enforces hierarchy and unique codes', async () => {
+  const service = new InMemoryOrganizationService()
+  const company = await service.registerUnit({
+    id: 'company-001',
+    code: 'ACME',
+    name: 'Acme Corporation',
+    kind: 'COMPANY',
+  })
+  assert.equal(company.isOk, true)
+
+  const invalidWarehouse = await service.registerUnit({
+    id: 'warehouse-001',
+    code: 'WH-001',
+    name: 'Warehouse',
+    kind: 'WAREHOUSE',
+    parentId: 'company-001',
+  })
+  assert.equal(invalidWarehouse.isErr, true)
+  if (invalidWarehouse.isErr) {
+    assert.equal(invalidWarehouse.error.code, 'INVALID_ORGANIZATION_UNIT')
+  }
+
+  const duplicateCode = await service.registerUnit({
+    id: 'company-002',
+    code: 'acme',
+    name: 'Duplicate',
+    kind: 'COMPANY',
+  })
+  assert.equal(duplicateCode.isErr, true)
+  if (duplicateCode.isErr) {
+    assert.equal(duplicateCode.error.code, 'ORGANIZATION_UNIT_ALREADY_EXISTS')
   }
 })
