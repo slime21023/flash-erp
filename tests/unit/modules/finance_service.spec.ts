@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict'
 import fc from 'fast-check'
-import { test } from '@japa/runner'
-import { JournalEntry } from '#modules/finance/contracts/index'
-import type { JournalLine } from '#modules/finance/contracts/index'
-import { InMemoryFinanceService } from '#modules/finance/services/in_memory_finance_service'
-import { Money } from '#platform/kernel/index'
+import { test } from 'vitest'
+import { JournalEntry } from '@modules/finance/contracts/index.js'
+import type { JournalLine } from '@modules/finance/contracts/index.js'
+import { InMemoryFinanceService } from '@modules/finance/services/in_memory_finance_service.js'
+import { Money } from '@platform/kernel/index.js'
 
 test('balanced journal entries preserve the debit-credit invariant', () => {
   fc.assert(
@@ -69,15 +69,14 @@ test('journal entries defensively copy and freeze their lines', () => {
   assert.equal(zero.isOk, true)
   if (amount.isErr || zero.isErr) return
 
-  const lines: JournalLine[] = [
-    { accountId: 'cash', debit: amount.value, credit: zero.value },
-    { accountId: 'revenue', debit: zero.value, credit: amount.value },
-  ]
+  const line0 = { accountId: 'cash', debit: amount.value, credit: zero.value }
+  const line1 = { accountId: 'revenue', debit: zero.value, credit: amount.value }
+  const lines = [line0, line1]
   const entry = JournalEntry.create('entry-immutable', lines)
   assert.equal(entry.isOk, true)
   if (entry.isErr) return
 
-  lines[0]!.accountId = 'mutated-cash'
+  line0.accountId = 'mutated-cash'
   assert.equal(entry.value.lines[0]?.accountId, 'cash')
   assert.equal(Object.isFrozen(entry.value.lines), true)
   assert.equal(Object.isFrozen(entry.value.lines[0]), true)

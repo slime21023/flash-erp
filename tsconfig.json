@@ -1,24 +1,32 @@
 {
-  "extends": "@adonisjs/tsconfig/tsconfig.app.json",
   "compilerOptions": {
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
-    "rootDir": ".",
-    "outDir": "build",
-    "noEmit": false,
-    "sourceMap": true,
+    "target": "ES2022",
+    "lib": ["ES2022"],
     "declaration": false,
-    "noUncheckedIndexedAccess": true,
-    "exactOptionalPropertyTypes": true
+    "sourceMap": true,
+    "outDir": "./dist",
+    "baseUrl": "./",
+    "paths": {
+      "@platform/*": ["src/platform/*"],
+      "@modules/*": ["src/modules/*"],
+      "#platform/*": ["src/platform/*"],
+      "#modules/*": ["src/modules/*"],
+      "@/*": ["src/*"]
+    },
+    "experimentalDecorators": true,
+    "emitDecoratorMetadata": true,
+    "skipLibCheck": true,
+    "strict": true,
+    "noImplicitAny": true,
+    "strictNullChecks": true,
+    "strictBindCallApply": true,
+    "forceConsistentCasingInFileNames": true,
+    "noFallthroughCasesInSwitch": true,
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true
   },
-  "include": [
-    "app/**/*.ts",
-    "bin/**/*.ts",
-    "commands/**/*.ts",
-    "config/**/*.ts",
-    "database/**/*.ts",
-    "start/**/*.ts",
-    "adonisrc.ts"
-  ],
-  "exclude": ["node_modules", "build", "coverage"]
+  "include": ["src/**/*.ts", "tests/**/*.ts", "scripts/**/*.ts"],
+  "exclude": ["node_modules", "dist", "build"]
 }

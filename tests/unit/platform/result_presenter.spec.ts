@@ -1,9 +1,8 @@
 import assert from 'node:assert/strict'
-import { DomainError, err, ok } from '#platform/fp/index'
-import { ResultPresenter } from '#platform/http/index'
-import type { PresenterOptions } from '#platform/http/index'
-import type { HttpContext } from '@adonisjs/core/http'
-import { test } from '@japa/runner'
+import { DomainError, err, ok } from '@platform/fp/index.js'
+import { ResultPresenter } from '@platform/http/index.js'
+import type { PresenterOptions, PresenterContext } from '@platform/http/index.js'
+import { test } from 'vitest'
 
 class NotFoundError extends DomainError {
   readonly code = 'ORDER_NOT_FOUND'
@@ -44,8 +43,6 @@ class ValidationError extends DomainError {
     super(message)
   }
 }
-
-type PresenterContext = Pick<HttpContext, 'response'>
 
 function createMockContext() {
   let statusCode = 200

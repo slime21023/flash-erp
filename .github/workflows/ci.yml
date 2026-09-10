@@ -1,0 +1,60 @@
+name: FlashERP CI
+
+on:
+  push:
+    branches: [main, master, develop]
+  pull_request:
+    branches: [main, master, develop]
+
+jobs:
+  build-and-test:
+    name: Build, Lint & Test
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: flash_erp
+          POSTGRES_PASSWORD: flash_erp
+          POSTGRES_DB: flash_erp
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'npm'
+
+      - name: Install Dependencies
+        run: npm ci
+
+      - name: Architecture Boundaries Check
+        run: npm run architecture:check
+
+      - name: TypeScript Typecheck
+        run: npm run typecheck
+
+      - name: Run Tests & PBT
+        run: npm test
+
+      - name: ESLint
+        run: npm run lint
+
+      - name: Prettier Format Check
+        run: npm run format:check
+
+      - name: Build Backend & Frontend
+        run: |
+          npm run build
+          npm run build -w frontend

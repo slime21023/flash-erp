@@ -1,15 +1,15 @@
 goal: '建立符合模組邊界與函數式錯誤處理規範的 FlashERP 基線'
 
 keyresults:
-  - kr-1: '乾淨環境可安裝、型別檢查、lint 與執行 Japa 測試'
+  - kr-1: '乾淨環境可安裝、型別檢查、lint 與執行 Vitest 測試'
   - kr-2: 'Result、Money、Quantity 的核心不變量具備至少 1,000 次 PBT'
   - kr-3: 'Platform 底座不依賴業務模組與 HTTP 框架'
-  - kr-4: '專案採用純 ESM、TypeScript 與 AdonisJS v7+ 依賴基線'
+  - kr-4: '專案採用純 ESM、TypeScript 與 NestJS v11+ 依賴基線'
 
 rules:
   - id: platform-result-errors
     name: 'domain-errors-use-result'
-    apply: 'app/platform/**'
+    apply: 'src/platform/**'
     level: error
     desc:
       - '業務錯誤必須使用 Result.err 回傳'
@@ -24,7 +24,7 @@ rules:
 
   - id: module-boundary
     name: 'module-boundary'
-    apply: 'app/modules/**'
+    apply: 'src/modules/**'
     level: error
     desc:
       - '跨模組只能引用目標模組 contracts'

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import fc from 'fast-check'
-import { StateMachine } from '#platform/workflow/index'
-import { test } from '@japa/runner'
+import { StateMachine } from '@platform/workflow/index.js'
+import { test } from 'vitest'
 
 type State = 'DRAFT' | 'SUBMITTED' | 'CLOSED' | 'VOID'
 type Event = 'SUBMIT' | 'CLOSE' | 'VOID'

@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict'
 import fc from 'fast-check'
-import { Result, combine, err, fromAsyncThrowable, fromThrowable, ok } from '#platform/fp/index'
-import type { Result as ResultType } from '#platform/fp/index'
-import { test } from '@japa/runner'
+import { Result, combine, err, fromAsyncThrowable, fromThrowable, ok } from '@platform/fp/index.js'
+import type { Result as ResultType } from '@platform/fp/index.js'
+import { test } from 'vitest'
 
 test('Result map preserves successful values', () => {
   fc.assert(

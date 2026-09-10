@@ -6,8 +6,8 @@ import {
   moneyArbitrary,
   quantityArbitrary,
   resultArbitrary,
-} from '#platform/testing/index'
-import { test } from '@japa/runner'
+} from '@platform/testing/index.js'
+import { test } from 'vitest'
 
 test('moneyArbitrary generates valid immutable Money instances', () => {
   fc.assert(

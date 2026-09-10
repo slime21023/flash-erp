@@ -6,8 +6,8 @@ import {
   InvalidNumberingDateError,
   InvalidNumberingKeyError,
   PatternDocumentNumberGenerator,
-} from '#platform/numbering/index'
-import { test } from '@japa/runner'
+} from '@platform/numbering/index.js'
+import { test } from 'vitest'
 
 test('document numbers are monotonic per sequence key', async () => {
   await fc.assert(

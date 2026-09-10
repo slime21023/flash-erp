@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import fc from 'fast-check'
-import { Quantity } from '#platform/kernel/index'
-import { test } from '@japa/runner'
+import { Quantity } from '@platform/kernel/index.js'
+import { test } from 'vitest'
 
 test('Quantity addition and subtraction round-trip', () => {
   fc.assert(

@@ -6,9 +6,9 @@ import {
   InvalidApprovalStepError,
   PipelineTerminatedError,
   UnauthorizedApproverError,
-} from '#platform/workflow/index'
-import type { ApprovalStep } from '#platform/workflow/index'
-import { test } from '@japa/runner'
+} from '@platform/workflow/index.js'
+import type { ApprovalStep } from '@platform/workflow/index.js'
+import { test } from 'vitest'
 
 type OrderContext = {
   orderId: string

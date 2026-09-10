@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import fc from 'fast-check'
-import { DateRange, InvalidDateRangeError } from '#platform/kernel/index'
-import { test } from '@japa/runner'
+import { DateRange, InvalidDateRangeError } from '@platform/kernel/index.js'
+import { test } from 'vitest'
 
 // Timestamp between 2020-01-01 and 2030-12-31 UTC
 const validDateArb = fc

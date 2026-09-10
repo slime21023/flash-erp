@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import fc from 'fast-check'
-import { Money } from '#platform/kernel/index'
-import { test } from '@japa/runner'
+import { Money } from '@platform/kernel/index.js'
+import { test } from 'vitest'
 
 test('Money allocation preserves the original total', () => {
   fc.assert(

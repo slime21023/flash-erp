@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
-import { test } from '@japa/runner'
-import { InMemoryOrganizationService } from '#modules/organization/services/in_memory_organization_service'
+import { test } from 'vitest'
+import { InMemoryOrganizationService } from '@modules/organization/services/in_memory_organization_service.js'
 
 test('organization service registers and resolves an organization unit', async () => {
   const service = new InMemoryOrganizationService()

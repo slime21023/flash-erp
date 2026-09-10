@@ -8,10 +8,10 @@
 
 - **系統定位**：專為單一企業設計的高可靠企業資源規劃系統（ERP），無多租戶（Multi-Tenancy）包袱，專注於組織內部複雜業務流程（多公司、多廠區、多倉儲、複雜簽核）。
 - **核心技術棧**：
-  - **Runtime / Framework**：Node.js + **AdonisJS v7+**（純 ESM、全 TypeScript、原生 IoC 容器與 AsyncLocalStorage）。
-  - **Database & ORM**：PostgreSQL + **Lucid ORM**（強型別交易管理）。
-  - **輸入驗證**：**VineJS**。
-  - **測試框架**：**@japa/runner** + **fast-check**（Property-Based Testing, PBT）。
+  - **Runtime / Framework**：Node.js + **NestJS 11+**（純 ESM、全 TypeScript、模組化 DI）。
+  - **Database & ORM**：PostgreSQL + **TypeORM**（強型別交易管理）。
+  - **輸入驗證**：**class-validator** + `ValidationPipe`。
+  - **測試框架**：**Vitest** + **fast-check**（Property-Based Testing, PBT）。
 - **架構風格**：**單體模組架構（Modular Monolith）**，拒絕過早微服務化帶來的分散式交易開銷，充分享受單一資料庫的 ACID 強一致性。
 
 ---
@@ -22,7 +22,7 @@
 
 ```text
 FlashERP/
-├── app/
+├── src/
 │   ├── platform/                       # 【平台底座】無業務色彩的通用基底（嚴禁隨意命名為 shared）
 │   │   ├── fp/                         # 函數式原語：Result<T, E>、DomainError
 │   │   ├── kernel/                     # 不可變領域值物件：Money、Quantity、Decimal 等
@@ -35,15 +35,15 @@ FlashERP/
 │       ├── [module_name]/              # 例：sales, inventory, finance, organization, rbac
 │       │   ├── contracts/              # 【唯一對外公開層】抽象類別 (Abstract Class)、DTO、DomainError
 │       │   ├── services/               # 模組私有用例 (Use Cases)
-│       │   ├── models/                 # 模組私有 Lucid ORM Models
+│       │   ├── entities/               # 模組私有 TypeORM Entities
 │       │   ├── controllers/            # HTTP 控制器
-│       │   ├── validators/             # VineJS 驗證綱要
+│       │   ├── dto/                    # class-validator 輸入 DTO
 │       │   ├── events/                 # 領域事件 (Domain Events)
 │       │   ├── listeners/              # 外部事件監聽器
-│       │   └── routes.ts               # 模組專屬路由
+│       │   └── manifest.ts              # 模組自描述清單
 │
-├── database/migrations/modules/        # 按模組分類的資料庫遷移檔
-├── commands/                           # 專案專屬自訂 Ace CLI 指令
+├── src/database/migrations/            # TypeORM 資料庫遷移檔
+├── scripts/                             # 專案專屬 CLI 與品質檢查
 └── tests/
     ├── unit/platform/                  # 平台元件之 PBT 性質測試（極度嚴格）
     └── unit/modules/                   # 業務模組用例與整合測試
@@ -65,16 +65,16 @@ FlashERP/
 3. **禁止在領域邏輯拋出業務異常**：
    - ❌ 嚴禁：`throw new InsufficientStockError()`。
 4. **禁止使用預設的 全域 Ace 產生器**：
-   - ❌ 嚴禁：`node ace make:controller Invoice`（會被放置於全域 `app/controllers` 破壞模組化）。
+   - ❌ 嚴禁：使用未遵循模組拓撲的全域產生器；請使用 `npm run make:module` 或手動建立於 `src/modules/<module>`。
 
 ### ✅ 唯一允許的模組間交互方式
 
-1. **同步呼叫**：只允許引用目標模組的 `contracts/` 目錄。透過 AdonisJS IoC 容器注入抽象類別：
+1. **同步呼叫**：只允許引用目標模組的 `contracts/` 目錄。透過 NestJS DI 注入抽象類別：
    ```typescript
    // 允許在 Sales 模組中引用
    import { InventoryContract } from '#modules/inventory/contracts/inventory.contract'
    ```
-2. **非同步通知**：透過 AdonisJS Event Emitter 發布領域事件（例如 `OrderApprovedEvent`），由其他模組的 `listeners/` 進行監聽。
+2. **非同步通知**：先將領域事件寫入 transactional outbox，再由 EventEmitter dispatcher 發布；其他模組的 `listeners/` 進行監聽。
 3. **資料庫交易共享**：跨模組事務必須由發起方建立 `db.transaction()`，並將 `{ client: trx }` 顯式傳入所有受影響的模組契約中。
 
 ---
@@ -122,17 +122,18 @@ export class SalesOrderService {
 
 ### 4.2. 邊界適配：Controller 不寫業務 try-catch
 
-Controller 只負責：接收參數 -> VineJS 驗證 -> 呼叫 Service -> 透過 `ResultPresenter` 映射為 HTTP 回應。
+Controller 只負責：接收參數 -> `ValidationPipe` 驗證 DTO -> 呼叫 Service -> 透過 `ResultPresenter` 映射為 HTTP 回應。
 
 ```typescript
-// app/modules/sales/controllers/sales_orders_controller.ts
-@inject()
-export default class SalesOrdersController {
-  constructor(private salesOrderService: SalesOrderService) {}
+// src/modules/sales/controllers/sales.controller.ts
+@Controller('sales')
+export class SalesController {
+  constructor(private readonly salesOrderService: SalesOrderService) {}
 
-  async approve({ params, response }: HttpContext) {
-    const result = await this.salesOrderService.approveOrder(params.id)
-    return ResultPresenter.handle({ response } as HttpContext, result)
+  @Post('orders/:id/approve')
+  async approve(@Param('id') id: string, @Res() response: Response) {
+    const result = await this.salesOrderService.approveOrder(id)
+    return ResultPresenter.handle(response, result)
   }
 }
 ```
@@ -146,8 +147,8 @@ export default class SalesOrdersController {
 
 ## 5. 測試規範：以 Property-Based Testing (PBT) 守護底座
 
-1. **`app/platform` 核心元件測試義務**：
-   - 金額計算、尾差攤提、借貸平衡、狀態機轉換、流水號單調性，**強制使用 `fast-check` + `@japa/runner` 進行 PBT 測試**。
+1. **`src/platform` 核心元件測試義務**：
+   - 金額計算、尾差攤提、借貸平衡、狀態機轉換、流水號單調性，**強制使用 `fast-check` + Vitest 進行 PBT 測試**。
    - 每次 PBT 測試至少執行 1,000 次隨機樣本，覆蓋極端數值、巨大數值與邊界狀況。
 2. **不變量範例（Invariants）**：
    - **金額攤提不變量**：$\sum \text{Allocated Amounts} \equiv \text{Original Total}$（無尾差遺漏）。
@@ -164,19 +165,19 @@ AI Agent 在需要建立新元件時，應遵守下列指令規範：
 
 - **啟動開發伺服器**：
   ```bash
-  node ace serve --hmr
+  npm run start:dev
   ```
-- **執行模組專屬 Migration**：
+- **執行資料庫 Migration**：
   ```bash
-  node ace migration:run --path=database/migrations/modules/<module_name>
+  npm run build && npm run start
   ```
 - **生成標準模組（使用自訂指令）**：
   ```bash
-  node ace make:module <module_name>
+  npm run make:module <module_name>
   ```
 - **執行所有單元與 PBT 測試**：
   ```bash
-  node ace test
+  npm test
   ```
 
 ---

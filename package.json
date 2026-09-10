@@ -3,50 +3,61 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "license": "UNLICENSED",
+  "license": "Apache-2.0",
+  "workspaces": [
+    "frontend"
+  ],
   "engines": {
-    "node": ">=24.0.0"
+    "node": ">=22.0.0"
   },
   "scripts": {
-    "dev": "node ace serve --hmr",
-    "build": "node ace build",
-    "test": "node ace test",
-    "test:unit": "node --import=@poppinss/ts-exec bin/test.ts",
+    "start": "node dist/src/main.js",
+    "start:dev": "tsx watch src/main.ts",
+    "build": "tsc && node dist/scripts/resolve_compiled_aliases.js",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "architecture:check": "node --import=@poppinss/ts-exec scripts/check_module_boundaries.ts"
+    "architecture:check": "node --experimental-strip-types scripts/check_module_boundaries.ts",
+    "make:module": "tsx scripts/make_module.ts",
+    "seed:admin": "tsx scripts/seed_admin.ts"
   },
   "imports": {
-    "#platform/*": "./app/platform/*.js",
-    "#modules/*": "./app/modules/*.js",
-    "#config/*": "./config/*.js",
-    "#start/*": "./start/*.js",
-    "#tests/*": "./tests/*.js"
+    "#platform/*": "./src/platform/*.js",
+    "#modules/*": "./src/modules/*.js"
   },
   "dependencies": {
-    "@adonisjs/core": "^7.3.5",
-    "@adonisjs/lucid": "^22.0.0",
-    "@vinejs/vine": "^4.4.0",
+    "@nestjs/common": "^11.0.11",
+    "@nestjs/config": "^4.0.1",
+    "@nestjs/core": "^11.0.11",
+    "@nestjs/event-emitter": "^12.0.0",
+    "@nestjs/platform-express": "^11.0.11",
+    "@nestjs/swagger": "^11.0.0",
+    "@nestjs/typeorm": "^11.0.0",
+    "class-transformer": "^0.5.1",
+    "class-validator": "^0.14.1",
     "luxon": "^3.7.2",
     "pg": "^8.16.3",
-    "reflect-metadata": "^0.2.2"
+    "reflect-metadata": "^0.2.2",
+    "rxjs": "^7.8.2",
+    "swagger-ui-express": "^5.0.1",
+    "typeorm": "^0.3.21"
   },
   "devDependencies": {
-    "@adonisjs/assembler": "^8.4.0",
-    "@adonisjs/eslint-config": "^3.1.0",
-    "@adonisjs/prettier-config": "^1.5.0",
-    "@adonisjs/tsconfig": "^2.0.0",
-    "@japa/assert": "^4.2.0",
-    "@japa/runner": "^4.5.0",
-    "@poppinss/ts-exec": "^1.4.4",
+    "@types/express": "^5.0.0",
     "@types/luxon": "^3.7.5",
     "@types/node": "^24.0.0",
-    "eslint": "^9.39.5",
+    "@types/swagger-ui-express": "^4.1.8",
+    "@typescript-eslint/eslint-plugin": "^8.24.0",
+    "@typescript-eslint/parser": "^8.24.0",
+    "eslint": "^9.20.0",
     "fast-check": "^4.9.0",
-    "prettier": "^3.7.4",
-    "typescript": "~5.8.3"
-  },
-  "prettier": "@adonisjs/prettier-config"
+    "prettier": "^3.5.0",
+    "tsx": "^4.19.3",
+    "typescript": "~5.8.3",
+    "typescript-eslint": "^8.24.0",
+    "vitest": "^3.0.7"
+  }
 }
