@@ -3,6 +3,7 @@ import { DataSource } from 'typeorm'
 import { InitialSchema1710000000000 } from '../src/database/migrations/1710000000000_initial_schema.js'
 import { FixCamelCaseColumns1710000001000 } from '../src/database/migrations/1710000001000_fix_camel_case_columns.js'
 import { HardenSchemaDefaults1710000002000 } from '../src/database/migrations/1710000002000_harden_schema_defaults.js'
+import { ProductionHardening1710000003000 } from '../src/database/migrations/1710000003000_production_hardening.js'
 import { hashPassword } from '../src/modules/identity/services/password.js'
 import { LocalUserEntity } from '../src/modules/identity/entities/local_user.entity.js'
 import { RoleEntity } from '../src/modules/identity/entities/role.entity.js'
@@ -33,6 +34,7 @@ async function seedAdmin() {
       InitialSchema1710000000000,
       FixCamelCaseColumns1710000001000,
       HardenSchemaDefaults1710000002000,
+      ProductionHardening1710000003000,
     ],
     migrationsRun: true,
     synchronize: false,
@@ -74,15 +76,19 @@ async function seedAdmin() {
 
   const permissions = [
     'organization.unit.create',
+    'organization.unit.read',
     'identity.user.create',
     'finance.account.create',
+    'finance.account.read',
     'finance.period.create',
     'finance.period.lock',
     'finance.settings.configure',
     'finance.journal.create',
     'finance.voucher.post',
     'finance.journal.reverse',
+    'finance.report.read',
     'inventory.master.write',
+    'inventory.stock.read',
     'inventory.movement.record',
     'procurement.supplier.create',
     'procurement.order.create',
@@ -96,18 +102,25 @@ async function seedAdmin() {
     'procurement.invoice.match',
     'procurement.invoice.voucher',
     'sales.customer.create',
+    'sales.customer.read',
     'sales.order.create',
+    'sales.order.read',
     'sales.order.approve',
     'sales.shipment.create',
     'treasury.account.create',
+    'treasury.account.read',
     'treasury.payment.create',
+    'treasury.payment.read',
     'treasury.payment.post',
     'treasury.receipt.create',
+    'treasury.receipt.read',
     'treasury.receipt.post',
     'treasury.statement.import',
     'treasury.statement.reconcile',
     'manufacturing.bom.create',
+    'manufacturing.bom.read',
     'manufacturing.order.create',
+    'manufacturing.order.read',
     'manufacturing.order.release',
     'manufacturing.order.issue',
     'manufacturing.order.complete',
@@ -140,6 +153,9 @@ async function seedAdmin() {
 
   let adminUser = await userRepo.findOneBy({ username: 'admin' })
   const adminPassword = process.env.ADMIN_PASSWORD
+  if (adminPassword !== undefined && adminPassword.length < 12) {
+    throw new Error('ADMIN_PASSWORD must contain at least 12 characters')
+  }
   if (!adminUser) {
     if (!adminPassword) throw new Error('ADMIN_PASSWORD is required when creating the admin user')
     const passwordHash = await hashPassword(adminPassword)

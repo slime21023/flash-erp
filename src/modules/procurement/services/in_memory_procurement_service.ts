@@ -99,7 +99,7 @@ export class InMemoryProcurementService extends ProcurementContract {
 
   async createPurchaseOrder(
     input: CreatePurchaseOrderInput,
-    _options?: TransactionOptions
+    options?: TransactionOptions
   ): Promise<Result<PurchaseOrderSnapshot, ProcurementError | SupplierNotFoundError>> {
     const id = input.id.trim()
     const companyId = input.companyId.trim()
@@ -110,15 +110,49 @@ export class InMemoryProcurementService extends ProcurementContract {
       return err(new ProcurementError('Purchase order fields and at least one line are required'))
     }
 
+    if (this.#purchaseOrders.has(id)) {
+      return err(new ProcurementError(`Purchase order already exists: ${id}`))
+    }
+
+    const currencies = new Set(input.lines.map((line) => line.currency.trim().toUpperCase()))
+    if (currencies.size !== 1 || !/^[A-Z]{3}$/.test([...currencies][0] ?? '')) {
+      return err(new ProcurementError('All purchase order lines must use one currency'))
+    }
+
+    const lineKeys = new Set<string>()
+    const lines = input.lines.map((line) => ({
+      itemId: line.itemId.trim(),
+      orderedQuantity: line.orderedQuantity,
+      unitCostMinorUnits: line.unitCostMinorUnits,
+      currency: line.currency.trim().toUpperCase(),
+    }))
+    for (const line of lines) {
+      if (
+        !line.itemId ||
+        lineKeys.has(line.itemId) ||
+        line.orderedQuantity <= 0n ||
+        line.unitCostMinorUnits < 0n
+      ) {
+        return err(new ProcurementError('Invalid or duplicate purchase order line'))
+      }
+      lineKeys.add(line.itemId)
+      if (this.inventory) {
+        const itemRes = await this.inventory.findItem(companyId, line.itemId, options)
+        if (itemRes.isErr) return err(new ProcurementError(itemRes.error.message))
+      }
+    }
+
+    if (
+      [...this.#purchaseOrders.values()].some(
+        (po) => po.companyId === companyId && po.number === number
+      )
+    ) {
+      return err(new ProcurementError(`Purchase order number already exists: ${number}`))
+    }
+
     const supplier = this.#suppliers.get(supplierId)
     if (!supplier || !supplier.isActive || supplier.companyId !== companyId) {
       return err(new SupplierNotFoundError(supplierId))
-    }
-
-    for (const line of input.lines) {
-      if (line.orderedQuantity <= 0n || line.unitCostMinorUnits < 0n) {
-        return err(new ProcurementError('Invalid line quantity or unit cost'))
-      }
     }
 
     const po: PurchaseOrderSnapshot = Object.freeze({
@@ -127,7 +161,7 @@ export class InMemoryProcurementService extends ProcurementContract {
       supplierId,
       number,
       status: 'DRAFT',
-      lines: Object.freeze([...input.lines]),
+      lines: Object.freeze(lines),
     })
 
     this.#purchaseOrders.set(id, po)
@@ -210,53 +244,95 @@ export class InMemoryProcurementService extends ProcurementContract {
       PurchaseOrderNotFoundError | InvalidPurchaseOrderStateError | ProcurementError
     >
   > {
-    const po = this.#purchaseOrders.get(input.purchaseOrderId)
+    const receiptId = input.id.trim()
+    const purchaseOrderId = input.purchaseOrderId.trim()
+    const warehouseId = input.warehouseId.trim()
+    if (!receiptId || !purchaseOrderId || !warehouseId) {
+      return err(new ProcurementError('id, purchaseOrderId, and warehouseId are required'))
+    }
+
+    const po = this.#purchaseOrders.get(purchaseOrderId)
     if (!po) {
-      return err(new PurchaseOrderNotFoundError(input.purchaseOrderId))
+      return err(new PurchaseOrderNotFoundError(purchaseOrderId))
     }
 
     if (po.status !== 'APPROVED') {
       return err(new InvalidPurchaseOrderStateError(po.status, 'receive'))
     }
 
-    const receiptLines: readonly GoodsReceiptLineInput[] =
-      input.lines && input.lines.length > 0
-        ? Object.freeze([...input.lines])
-        : Object.freeze(
-            po.lines.map((l) => ({
-              itemId: l.itemId,
-              receivedQuantity: l.orderedQuantity,
-            }))
-          )
-
-    const receipt: GoodsReceiptSnapshot = Object.freeze({
-      id: input.id,
-      purchaseOrderId: input.purchaseOrderId,
-      warehouseId: input.warehouseId,
-      receivedAt: input.receivedAt,
-      lines: receiptLines,
-    })
-
-    this.#goodsReceipts.set(input.id, receipt)
+    if (this.#goodsReceipts.has(receiptId)) {
+      return err(new ProcurementError(`Goods receipt already exists: ${receiptId}`))
+    }
 
     if (this.inventory) {
-      const poLinesByItem = new Map(po.lines.map((l) => [l.itemId, l]))
+      const warehouseRes = await this.inventory.findWarehouse(po.companyId, warehouseId, options)
+      if (warehouseRes.isErr) return err(new ProcurementError(warehouseRes.error.message))
+    }
+
+    const poLinesByItem = new Map(po.lines.map((line) => [line.itemId, line]))
+    const receivedByItem = new Map<string, bigint>()
+    for (const receipt of this.#goodsReceipts.values()) {
+      if (receipt.purchaseOrderId !== po.id) continue
+      for (const line of receipt.lines) {
+        receivedByItem.set(
+          line.itemId,
+          (receivedByItem.get(line.itemId) ?? 0n) + line.receivedQuantity
+        )
+      }
+    }
+
+    const receiptLines: readonly GoodsReceiptLineInput[] =
+      input.lines && input.lines.length > 0
+        ? Object.freeze(
+            input.lines.map((line) => ({
+              itemId: line.itemId.trim(),
+              receivedQuantity: line.receivedQuantity,
+            }))
+          )
+        : Object.freeze(
+            po.lines
+              .map((line) => ({
+                itemId: line.itemId,
+                receivedQuantity: line.orderedQuantity - (receivedByItem.get(line.itemId) ?? 0n),
+              }))
+              .filter((line) => line.receivedQuantity > 0n)
+          )
+
+    const receiptItemIds = new Set<string>()
+    for (const line of receiptLines) {
+      const poLine = poLinesByItem.get(line.itemId)
+      const receivedQuantity = (receivedByItem.get(line.itemId) ?? 0n) + line.receivedQuantity
+      if (
+        !poLine ||
+        receiptItemIds.has(line.itemId) ||
+        line.receivedQuantity <= 0n ||
+        receivedQuantity > poLine.orderedQuantity
+      ) {
+        return err(new ProcurementError(`Invalid or excessive goods receipt line: ${line.itemId}`))
+      }
+      receiptItemIds.add(line.itemId)
+    }
+
+    if (receiptLines.length === 0) {
+      return err(new ProcurementError('No remaining purchase order quantity to receive'))
+    }
+
+    if (this.inventory) {
       for (const line of receiptLines) {
         const poLine = poLinesByItem.get(line.itemId)
-        const unitCost = poLine?.unitCostMinorUnits ?? 0n
-        const currency = poLine?.currency ?? 'TWD'
+        if (!poLine) return err(new ProcurementError(`Item ${line.itemId} is not on PO`))
 
         const movementRes = await this.inventory.recordMovement(
           {
-            id: `mov-${input.id}-${line.itemId}`,
+            id: `mov-${receiptId}-${line.itemId}-${warehouseId}`,
             companyId: po.companyId,
             itemId: line.itemId,
-            warehouseId: input.warehouseId,
+            warehouseId,
             sourceType: 'GOODS_RECEIPT',
-            sourceId: input.id,
+            sourceId: receiptId,
             quantityDelta: line.receivedQuantity,
-            unitCostMinorUnits: unitCost,
-            currency,
+            unitCostMinorUnits: poLine.unitCostMinorUnits,
+            currency: poLine.currency,
             occurredAt: input.receivedAt,
           },
           options
@@ -268,6 +344,15 @@ export class InMemoryProcurementService extends ProcurementContract {
         }
       }
     }
+
+    const receipt: GoodsReceiptSnapshot = Object.freeze({
+      id: receiptId,
+      purchaseOrderId,
+      warehouseId,
+      receivedAt: input.receivedAt,
+      lines: receiptLines,
+    })
+    this.#goodsReceipts.set(receiptId, receipt)
 
     this.eventEmitter?.emit(
       GoodsReceivedEvent.EVENT_NAME,
@@ -454,6 +539,8 @@ export class InMemoryProcurementService extends ProcurementContract {
     const purchaseOrderId = input.purchaseOrderId.trim()
     const invoiceNumber = input.invoiceNumber.trim()
     const invoiceDate = input.invoiceDate.trim()
+    const currency = input.currency.trim().toUpperCase()
+    const taxRateBps = input.taxRateBasisPoints ?? 500
 
     if (
       !id ||
@@ -478,6 +565,15 @@ export class InMemoryProcurementService extends ProcurementContract {
     }
 
     if (
+      !/^[A-Z]{3}$/.test(currency) ||
+      !Number.isInteger(taxRateBps) ||
+      taxRateBps < 0 ||
+      taxRateBps > 10_000
+    ) {
+      return err(new ProcurementError('Invoice currency or tax rate is invalid'))
+    }
+
+    if (
       this.#vendorInvoices.has(id) ||
       [...this.#vendorInvoices.values()].some(
         (inv) => inv.companyId === companyId && inv.invoiceNumber === invoiceNumber
@@ -486,16 +582,37 @@ export class InMemoryProcurementService extends ProcurementContract {
       return err(new VendorInvoiceAlreadyExistsError(invoiceNumber))
     }
 
-    // Compute line totals and net amount
-    const processedLines = input.lines.map((l) => ({
-      itemId: l.itemId,
-      invoicedQuantity: l.invoicedQuantity,
-      unitPriceMinorUnits: l.unitPriceMinorUnits,
-      lineTotalMinorUnits: l.lineTotalMinorUnits ?? l.invoicedQuantity * l.unitPriceMinorUnits,
-    }))
+    const poLinesByItem = new Map(po.lines.map((line) => [line.itemId, line]))
+    const invoiceItemIds = new Set<string>()
+    const invoiceLines: VendorInvoiceSnapshot['lines'][number][] = []
+    for (const line of input.lines) {
+      const itemId = line.itemId.trim()
+      const poLine = poLinesByItem.get(itemId)
+      const expectedLineTotal = line.invoicedQuantity * line.unitPriceMinorUnits
+      if (
+        !poLine ||
+        invoiceItemIds.has(itemId) ||
+        line.invoicedQuantity <= 0n ||
+        line.unitPriceMinorUnits < 0n ||
+        (line.lineTotalMinorUnits !== undefined &&
+          line.lineTotalMinorUnits !== expectedLineTotal) ||
+        poLine.currency !== currency
+      ) {
+        return err(new ProcurementError(`Invalid vendor invoice line: ${itemId}`))
+      }
+      invoiceItemIds.add(itemId)
+      invoiceLines.push({
+        itemId,
+        invoicedQuantity: line.invoicedQuantity,
+        unitPriceMinorUnits: line.unitPriceMinorUnits,
+        lineTotalMinorUnits: expectedLineTotal,
+      })
+    }
 
-    const netAmountMinorUnits = processedLines.reduce((sum, l) => sum + l.lineTotalMinorUnits, 0n)
-    const taxRateBps = input.taxRateBasisPoints ?? 500
+    const netAmountMinorUnits = invoiceLines.reduce(
+      (sum, line) => sum + line.lineTotalMinorUnits,
+      0n
+    )
     const { taxAmountMinorUnits, totalAmountMinorUnits } = calculateTaxAndTotal(
       netAmountMinorUnits,
       taxRateBps
@@ -508,13 +625,13 @@ export class InMemoryProcurementService extends ProcurementContract {
       purchaseOrderId,
       invoiceNumber,
       invoiceDate,
-      currency: input.currency,
+      currency,
       taxRateBasisPoints: taxRateBps,
       netAmountMinorUnits,
       taxAmountMinorUnits,
       totalAmountMinorUnits,
       status: 'RECEIVED',
-      lines: Object.freeze(processedLines),
+      lines: Object.freeze(invoiceLines),
     })
 
     this.#vendorInvoices.set(id, invoice)
@@ -560,7 +677,30 @@ export class InMemoryProcurementService extends ProcurementContract {
       }
     }
 
-    const matchRes = ThreeWayMatcher.match(po.lines, receiptLines, invoice, tolerance)
+    const previouslyInvoicedByItem = new Map<string, bigint>()
+    for (const priorInvoice of this.#vendorInvoices.values()) {
+      if (
+        priorInvoice.id === invoice.id ||
+        priorInvoice.purchaseOrderId !== po.id ||
+        (priorInvoice.status !== 'MATCHED' && priorInvoice.status !== 'POSTED')
+      ) {
+        continue
+      }
+      for (const line of priorInvoice.lines) {
+        previouslyInvoicedByItem.set(
+          line.itemId,
+          (previouslyInvoicedByItem.get(line.itemId) ?? 0n) + line.invoicedQuantity
+        )
+      }
+    }
+
+    const matchRes = ThreeWayMatcher.match(
+      po.lines,
+      receiptLines,
+      invoice,
+      tolerance,
+      previouslyInvoicedByItem
+    )
     if (matchRes.isErr) {
       const disputedInvoice: VendorInvoiceSnapshot = Object.freeze({
         ...invoice,
@@ -667,6 +807,13 @@ export class InMemoryProcurementService extends ProcurementContract {
       if (draftRes.isErr) {
         return err(
           new AccountsPayablePostingError(`Finance createDraft failed: ${draftRes.error.message}`)
+        )
+      }
+
+      const postRes = await this.finance.postDraft(input.voucherId, undefined, options)
+      if (postRes.isErr) {
+        return err(
+          new AccountsPayablePostingError(`Finance posting failed: ${postRes.error.message}`)
         )
       }
     }

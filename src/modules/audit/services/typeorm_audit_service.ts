@@ -7,6 +7,7 @@ import type { TransactionOptions } from '@platform/persistence/index.js'
 import { AuditContract, InvalidAuditEntryError } from '../contracts/index.js'
 import type { AuditEntryInput, AuditEntrySnapshot } from '../contracts/index.js'
 import { AuditEntryEntity } from '../entities/audit_entry.entity.js'
+import { currentEventMetadata } from '@platform/context/index.js'
 
 @Injectable()
 export class TypeOrmAuditService extends AuditContract {
@@ -29,30 +30,45 @@ export class TypeOrmAuditService extends AuditContract {
       return err(new InvalidAuditEntryError('action, entityType, and entityId are required'))
     }
 
-    const manager = options?.client ?? this.repo.manager
-    const entry = manager.create(AuditEntryEntity, {
-      actorId: input.actorId?.trim() || null,
-      action,
-      entityType,
-      entityId,
-      beforeValue: (input.beforeValue as Record<string, unknown>) ?? null,
-      afterValue: (input.afterValue as Record<string, unknown>) ?? null,
-      requestId: input.requestId?.trim() || null,
-      occurredAt: new Date(),
-    })
+    try {
+      const manager = options?.client ?? this.repo.manager
+      const metadata = currentEventMetadata()
+      const eventId = input.eventId?.trim() || metadata.eventId || null
+      if (eventId) {
+        const existing = await manager.findOne(AuditEntryEntity, { where: { eventId } })
+        if (existing) return ok(TypeOrmAuditService.snapshot(existing))
+      }
+      const entry = manager.create(AuditEntryEntity, {
+        actorId: input.actorId?.trim() || metadata.actorId,
+        action,
+        entityType,
+        entityId,
+        beforeValue: (input.beforeValue as Record<string, unknown>) ?? null,
+        afterValue: (input.afterValue as Record<string, unknown>) ?? null,
+        requestId: input.requestId?.trim() || metadata.requestId,
+        eventId,
+        occurredAt: new Date(),
+      })
 
-    const saved = await manager.save(entry)
+      const saved = await manager.save(entry)
+      return ok(TypeOrmAuditService.snapshot(saved))
+    } catch {
+      return err(new InvalidAuditEntryError('Unable to persist audit entry'))
+    }
+  }
 
-    return ok({
-      id: Number(saved.id),
-      ...(saved.actorId ? { actorId: saved.actorId } : {}),
-      action: saved.action,
-      entityType: saved.entityType,
-      entityId: saved.entityId,
-      ...(saved.beforeValue ? { beforeValue: saved.beforeValue } : {}),
-      ...(saved.afterValue ? { afterValue: saved.afterValue } : {}),
-      ...(saved.requestId ? { requestId: saved.requestId } : {}),
-      occurredAt: saved.occurredAt,
-    })
+  private static snapshot(entry: AuditEntryEntity): AuditEntrySnapshot {
+    return {
+      id: Number(entry.id),
+      ...(entry.actorId ? { actorId: entry.actorId } : {}),
+      action: entry.action,
+      entityType: entry.entityType,
+      entityId: entry.entityId,
+      ...(entry.beforeValue ? { beforeValue: entry.beforeValue } : {}),
+      ...(entry.afterValue ? { afterValue: entry.afterValue } : {}),
+      ...(entry.requestId ? { requestId: entry.requestId } : {}),
+      ...(entry.eventId ? { eventId: entry.eventId } : {}),
+      occurredAt: entry.occurredAt,
+    }
   }
 }

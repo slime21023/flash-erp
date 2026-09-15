@@ -27,29 +27,18 @@ export class RbacGuard implements CanActivate {
     }
 
     const request = context.switchToHttp().getRequest()
-    // AuthGuard runs first in the application. The header fallback keeps this guard
-    // independently testable and is ignored once an authenticated principal exists.
-    const userId =
-      request.user?.id ??
-      (request.authToken === undefined ? request.headers?.['x-user-id'] : undefined)
+    const userId = request.user?.id
 
     if (!userId || typeof userId !== 'string' || userId.trim().length === 0) {
       throw new UnauthorizedException('Authentication required')
     }
 
-    const organizationUnitId =
-      request.headers?.['x-org-unit-id'] ??
-      request.params?.organizationUnitId ??
-      request.params?.orgUnitId ??
-      request.body?.organizationUnitId ??
-      request.body?.companyId ??
-      request.query?.organizationUnitId ??
-      request.query?.companyId
+    const organizationUnitId = request.headers?.['x-org-unit-id']
 
     if (
       !organizationUnitId ||
       typeof organizationUnitId !== 'string' ||
-      organizationUnitId.trim().length === 0
+      !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/.test(organizationUnitId.trim())
     ) {
       throw new ForbiddenException('Organization unit scope required for permission authorization')
     }

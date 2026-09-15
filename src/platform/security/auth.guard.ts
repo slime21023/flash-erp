@@ -2,6 +2,7 @@ import { CanActivate, ExecutionContext, Injectable, UnauthorizedException } from
 import { Reflector } from '@nestjs/core'
 import { Authenticator } from './authenticator.js'
 import { PUBLIC_ROUTE_KEY } from './public.decorator.js'
+import { readCookie, SESSION_COOKIE_NAME } from './session_cookie.js'
 
 @Injectable()
 export class AuthGuard implements CanActivate {
@@ -22,7 +23,7 @@ export class AuthGuard implements CanActivate {
     const token =
       typeof header === 'string' && /^Bearer\s+\S+$/i.test(header)
         ? header.slice(header.indexOf(' ') + 1).trim()
-        : ''
+        : (readCookie(request.headers?.cookie, SESSION_COOKIE_NAME) ?? '')
 
     if (!token) throw new UnauthorizedException('Authentication required')
 
@@ -31,6 +32,7 @@ export class AuthGuard implements CanActivate {
 
     request.user = result.value
     request.authToken = token
+    request.authViaBearer = typeof header === 'string' && /^Bearer\s+\S+$/i.test(header)
     return true
   }
 }

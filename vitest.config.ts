@@ -4,7 +4,7 @@ import { resolve } from 'node:path'
 export default defineConfig({
   test: {
     include: ['tests/**/*.spec.ts'],
-    exclude: ['node_modules', 'dist', 'build'],
+    exclude: ['node_modules', 'dist', 'build', 'tests/postgres.integration.spec.ts'],
     globals: true,
   },
   resolve: {

@@ -1,7 +1,9 @@
 import { Module } from '@nestjs/common'
+import { APP_INTERCEPTOR } from '@nestjs/core'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { ConfigModule } from '@nestjs/config'
+import { validateEnvironment } from './config/env.validation.js'
 import { TypeOrmModule } from '@nestjs/typeorm'
 import { OrganizationModule } from '@modules/organization/organization.module.js'
 import { AuditModule } from '@modules/audit/audit.module.js'
@@ -15,6 +17,7 @@ import { ManufacturingModule } from '@modules/manufacturing/manufacturing.module
 import { EventEmitterModule } from '@nestjs/event-emitter'
 import { AddonsModule } from '@platform/addons/addons.module.js'
 import { OutboxModule } from '@platform/persistence/outbox.module.js'
+import { RequestContextInterceptor } from '@platform/context/index.js'
 import { AppController } from './app.controller.js'
 import { organizationManifest } from '@modules/organization/manifest.js'
 import { identityManifest } from '@modules/identity/manifest.js'
@@ -30,7 +33,7 @@ const appDirectory = dirname(fileURLToPath(import.meta.url))
 
 @Module({
   imports: [
-    ConfigModule.forRoot({ isGlobal: true }),
+    ConfigModule.forRoot({ isGlobal: true, validate: validateEnvironment }),
     EventEmitterModule.forRoot(),
     OutboxModule,
     AddonsModule.forRoot([
@@ -54,6 +57,14 @@ const appDirectory = dirname(fileURLToPath(import.meta.url))
         database: process.env.DB_DATABASE ?? 'flash_erp',
         autoLoadEntities: true,
         synchronize: false,
+        ssl:
+          process.env.DB_SSL === 'true'
+            ? { rejectUnauthorized: process.env.DB_SSL_REJECT_UNAUTHORIZED !== 'false' }
+            : undefined,
+        extra: {
+          max: Number(process.env.DB_POOL_MAX ?? 20),
+          connectionTimeoutMillis: 5_000,
+        },
         migrations: [join(appDirectory, 'database/migrations/*.{js,ts}')],
         migrationsRun: true,
         migrationsTransactionMode: 'all',
@@ -70,5 +81,6 @@ const appDirectory = dirname(fileURLToPath(import.meta.url))
     ManufacturingModule,
   ],
   controllers: [AppController],
+  providers: [{ provide: APP_INTERCEPTOR, useClass: RequestContextInterceptor }],
 })
 export class AppModule {}

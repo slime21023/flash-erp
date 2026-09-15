@@ -23,17 +23,6 @@ export class BomExplosionEngine {
    * Calculates planned material requirements given a BOM and target output quantity.
    * Uses ceiling integer division to ensure scrap is accounted for without under-allocating.
    */
-  static explode(params: {
-    targetQuantity: bigint
-    baseQuantity: bigint
-    lines: readonly BomLineSnapshot[]
-  }): Array<{ componentItemId: string; plannedQuantity: bigint }> {
-    const { targetQuantity, baseQuantity, lines } = params
-    const result = BomExplosionEngine.tryExplode(params)
-    if (result.isErr) throw new Error(result.error.message)
-    return result.value
-  }
-
   private static calculate({
     targetQuantity,
     baseQuantity,

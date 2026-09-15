@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common'
 import { InjectRepository } from '@nestjs/typeorm'
 import { Repository } from 'typeorm'
+import { createHash, randomUUID } from 'node:crypto'
 import { err, ok } from '@platform/fp/index.js'
 import type { Result } from '@platform/fp/index.js'
 import {
@@ -9,6 +10,8 @@ import {
   runInTransaction,
 } from '@platform/persistence/index.js'
 import { Money } from '@platform/kernel/index.js'
+import { scopeMismatch } from '@platform/context/index.js'
+import { ScopeForbiddenError } from '@platform/security/index.js'
 import { InventoryContract } from '@modules/inventory/contracts/index.js'
 import { FinanceContract, type JournalLine } from '@modules/finance/contracts/index.js'
 import {
@@ -41,6 +44,11 @@ import { WorkOrderLineEntity } from '../entities/work_order_line.entity.js'
 import { BomExplosionEngine } from './bom_explosion_engine.js'
 import { OverheadAllocationEngine } from './overhead_allocation_engine.js'
 
+function stableReference(prefix: string, ...parts: string[]): string {
+  const digest = createHash('sha256').update(parts.join('\0')).digest('hex')
+  return `${prefix}-${digest.slice(0, 48)}`
+}
+
 @Injectable()
 export class TypeOrmManufacturingService extends ManufacturingContract {
   constructor(
@@ -63,7 +71,10 @@ export class TypeOrmManufacturingService extends ManufacturingContract {
     input: RegisterBomInput,
     options?: TransactionOptions
   ): Promise<
-    Result<BomSnapshot, ManufacturingError | BomAlreadyExistsError | CyclicBomDependencyError>
+    Result<
+      BomSnapshot,
+      ManufacturingError | BomAlreadyExistsError | CyclicBomDependencyError | ScopeForbiddenError
+    >
   > {
     const id = input.id.trim()
     const companyId = input.companyId.trim()
@@ -71,15 +82,55 @@ export class TypeOrmManufacturingService extends ManufacturingContract {
     const name = input.name.trim()
     const parentItemId = input.parentItemId.trim()
 
-    if (!id || !companyId || !code || !name || !parentItemId) {
+    if (!id || !companyId || !code || !name || !parentItemId || input.lines.length === 0) {
       return err(new ManufacturingError('BOM fields are required'))
     }
 
-    if (input.lines.some((l) => l.componentItemId === parentItemId)) {
-      return err(new CyclicBomDependencyError(parentItemId, parentItemId))
-    }
+    const selectedScope = scopeMismatch(companyId, options)
+    if (selectedScope) return err(new ScopeForbiddenError(selectedScope, 'BOM'))
 
     const manager = options?.client ?? this.bomRepo.manager
+    const lineIds = new Set<string>()
+    const bomLines = input.lines.map((line) => ({
+      componentItemId: line.componentItemId.trim(),
+      quantityPerBase: line.quantityPerBase,
+      scrapPercentageBasisPoints: line.scrapPercentageBasisPoints ?? 0,
+      memo: line.memo,
+    }))
+    if ((input.baseQuantity ?? 1n) <= 0n) {
+      return err(new ManufacturingError('BOM base quantity must be positive'))
+    }
+    for (const line of bomLines) {
+      if (
+        !line.componentItemId ||
+        lineIds.has(line.componentItemId) ||
+        line.componentItemId === parentItemId ||
+        line.quantityPerBase <= 0n ||
+        !Number.isInteger(line.scrapPercentageBasisPoints) ||
+        line.scrapPercentageBasisPoints < 0 ||
+        line.scrapPercentageBasisPoints > 10_000
+      ) {
+        if (line.componentItemId === parentItemId) {
+          return err(new CyclicBomDependencyError(parentItemId, parentItemId))
+        }
+        return err(new ManufacturingError('BOM lines must be unique, positive, and valid'))
+      }
+      lineIds.add(line.componentItemId)
+    }
+
+    const parentItemRes = await this.inventory.findItem(companyId, parentItemId, {
+      ...options,
+      client: manager,
+    })
+    if (parentItemRes.isErr) return err(new ManufacturingError(parentItemRes.error.message))
+    for (const line of bomLines) {
+      const itemRes = await this.inventory.findItem(companyId, line.componentItemId, {
+        ...options,
+        client: manager,
+      })
+      if (itemRes.isErr) return err(new ManufacturingError(itemRes.error.message))
+    }
+
     const existing = await manager.findOne(BomEntity, {
       where: [{ id }, { companyId, code }],
     })
@@ -95,7 +146,7 @@ export class TypeOrmManufacturingService extends ManufacturingContract {
         name,
         parentItemId,
         baseQuantity: (input.baseQuantity ?? 1n).toString(),
-        lines: input.lines.map((l, idx) =>
+        lines: bomLines.map((l, idx) =>
           manager.create(BomLineEntity, {
             id: `${id}-line-${idx}`,
             bomId: id,
@@ -130,7 +181,7 @@ export class TypeOrmManufacturingService extends ManufacturingContract {
   async getBom(
     id: string,
     options?: TransactionOptions
-  ): Promise<Result<BomSnapshot, BomNotFoundError>> {
+  ): Promise<Result<BomSnapshot, BomNotFoundError | ScopeForbiddenError>> {
     const manager = options?.client ?? this.bomRepo.manager
     const entity = await manager.findOne(BomEntity, {
       where: { id },
@@ -139,6 +190,8 @@ export class TypeOrmManufacturingService extends ManufacturingContract {
     if (!entity) {
       return err(new BomNotFoundError(id))
     }
+    const selectedScope = scopeMismatch(entity.companyId, options)
+    if (selectedScope) return err(new ScopeForbiddenError(selectedScope, 'BOM'))
     return ok({
       id: entity.id,
       companyId: entity.companyId,
@@ -158,103 +211,146 @@ export class TypeOrmManufacturingService extends ManufacturingContract {
   async createWorkOrder(
     input: CreateWorkOrderInput,
     options?: TransactionOptions
-  ): Promise<Result<WorkOrderSnapshot, ManufacturingError | BomNotFoundError>> {
-    return runInTransaction<WorkOrderSnapshot, ManufacturingError | BomNotFoundError>(
-      this.woRepo.manager,
-      options,
-      async (client) => {
-        const id = input.id.trim()
-        const companyId = input.companyId.trim()
-        const workOrderNumber = input.workOrderNumber.trim()
-        const bomId = input.bomId.trim()
+  ): Promise<
+    Result<WorkOrderSnapshot, ManufacturingError | BomNotFoundError | ScopeForbiddenError>
+  > {
+    return runInTransaction<
+      WorkOrderSnapshot,
+      ManufacturingError | BomNotFoundError | ScopeForbiddenError
+    >(this.woRepo.manager, options, async (client) => {
+      const id = input.id.trim()
+      const companyId = input.companyId.trim()
+      const workOrderNumber = input.workOrderNumber.trim()
+      const bomId = input.bomId.trim()
+      const outputWarehouseId = input.outputWarehouseId.trim()
+      const rawMaterialWarehouseId = input.rawMaterialWarehouseId.trim()
 
-        if (!id || !companyId || !workOrderNumber || !bomId) {
-          return err(new ManufacturingError('Work order fields are required'))
-        }
-
-        if (input.targetQuantity <= 0n) {
-          return err(new ManufacturingError('Target quantity must be greater than zero'))
-        }
-
-        const bom = await client.findOne(BomEntity, {
-          where: { id: bomId },
-          relations: ['lines'],
-        })
-        if (!bom) {
-          return err(new BomNotFoundError(bomId))
-        }
-
-        const explodedResult = BomExplosionEngine.tryExplode({
-          targetQuantity: input.targetQuantity,
-          baseQuantity: BigInt(bom.baseQuantity),
-          lines: bom.lines.map((l) => ({
-            componentItemId: l.componentItemId,
-            quantityPerBase: BigInt(l.quantityPerBase),
-            scrapPercentageBasisPoints: l.scrapPercentageBasisPoints,
-          })),
-        })
-        if (explodedResult.isErr) return err(explodedResult.error)
-        const exploded = explodedResult.value
-
-        try {
-          const entity = client.create(WorkOrderEntity, {
-            id,
-            companyId,
-            workOrderNumber,
-            bomId,
-            outputItemId: bom.parentItemId,
-            outputWarehouseId: input.outputWarehouseId,
-            rawMaterialWarehouseId: input.rawMaterialWarehouseId,
-            targetQuantity: input.targetQuantity.toString(),
-            completedQuantity: '0',
-            status: 'DRAFT',
-            actualDirectMaterialCostMinorUnits: '0',
-            allocatedOverheadCostMinorUnits: '0',
-            totalCostMinorUnits: '0',
-            unitCostMinorUnits: '0',
-            memo: input.memo,
-            lines: exploded.map((item, idx) =>
-              client.create(WorkOrderLineEntity, {
-                id: `${id}-line-${idx}`,
-                workOrderId: id,
-                componentItemId: item.componentItemId,
-                warehouseId: input.rawMaterialWarehouseId,
-                plannedQuantity: item.plannedQuantity.toString(),
-                issuedQuantity: '0',
-              })
-            ),
-          })
-          await client.save(entity)
-
-          return ok({
-            id: entity.id,
-            companyId: entity.companyId,
-            workOrderNumber: entity.workOrderNumber,
-            bomId: entity.bomId,
-            outputItemId: entity.outputItemId,
-            outputWarehouseId: entity.outputWarehouseId,
-            rawMaterialWarehouseId: entity.rawMaterialWarehouseId,
-            targetQuantity: BigInt(entity.targetQuantity),
-            completedQuantity: 0n,
-            status: entity.status as any,
-            actualDirectMaterialCostMinorUnits: 0n,
-            allocatedOverheadCostMinorUnits: 0n,
-            totalCostMinorUnits: 0n,
-            unitCostMinorUnits: 0n,
-            lines: entity.lines.map((l) => ({
-              id: l.id,
-              componentItemId: l.componentItemId,
-              warehouseId: l.warehouseId,
-              plannedQuantity: BigInt(l.plannedQuantity),
-              issuedQuantity: 0n,
-            })),
-            memo: entity.memo,
-          })
-        } catch {
-          return err(new ManufacturingError(`Unable to create work order: ${id}`))
-        }
+      if (
+        !id ||
+        !companyId ||
+        !workOrderNumber ||
+        !bomId ||
+        !outputWarehouseId ||
+        !rawMaterialWarehouseId
+      ) {
+        return err(new ManufacturingError('Work order fields are required'))
       }
-    )
+
+      const selectedScope = scopeMismatch(companyId, options)
+      if (selectedScope) return err(new ScopeForbiddenError(selectedScope, 'work order'))
+
+      if (input.targetQuantity <= 0n) {
+        return err(new ManufacturingError('Target quantity must be greater than zero'))
+      }
+
+      const existingWorkOrder = await client.findOne(WorkOrderEntity, {
+        where: [{ id }, { companyId, workOrderNumber }],
+      })
+      if (existingWorkOrder) {
+        return err(new ManufacturingError(`Work order already exists: ${id}`))
+      }
+
+      const bom = await client.findOne(BomEntity, {
+        where: { id: bomId },
+        relations: ['lines'],
+      })
+      if (!bom || bom.companyId !== companyId) {
+        return err(new BomNotFoundError(bomId))
+      }
+
+      const outputWarehouseRes = await this.inventory.findWarehouse(companyId, outputWarehouseId, {
+        ...options,
+        client,
+      })
+      const rawWarehouseRes = await this.inventory.findWarehouse(
+        companyId,
+        rawMaterialWarehouseId,
+        {
+          ...options,
+          client,
+        }
+      )
+      if (outputWarehouseRes.isErr || rawWarehouseRes.isErr) {
+        return err(
+          new ManufacturingError('Work order warehouses must be active in the same company')
+        )
+      }
+      const outputItemRes = await this.inventory.findItem(companyId, bom.parentItemId, {
+        ...options,
+        client,
+      })
+      if (outputItemRes.isErr) return err(new ManufacturingError(outputItemRes.error.message))
+
+      const explodedResult = BomExplosionEngine.tryExplode({
+        targetQuantity: input.targetQuantity,
+        baseQuantity: BigInt(bom.baseQuantity),
+        lines: bom.lines.map((l) => ({
+          componentItemId: l.componentItemId,
+          quantityPerBase: BigInt(l.quantityPerBase),
+          scrapPercentageBasisPoints: l.scrapPercentageBasisPoints,
+        })),
+      })
+      if (explodedResult.isErr) return err(explodedResult.error)
+      const exploded = explodedResult.value
+
+      try {
+        const entity = client.create(WorkOrderEntity, {
+          id,
+          companyId,
+          workOrderNumber,
+          bomId,
+          outputItemId: bom.parentItemId,
+          outputWarehouseId,
+          rawMaterialWarehouseId,
+          targetQuantity: input.targetQuantity.toString(),
+          completedQuantity: '0',
+          status: 'DRAFT',
+          actualDirectMaterialCostMinorUnits: '0',
+          allocatedOverheadCostMinorUnits: '0',
+          totalCostMinorUnits: '0',
+          unitCostMinorUnits: '0',
+          memo: input.memo,
+          lines: exploded.map((item, idx) =>
+            client.create(WorkOrderLineEntity, {
+              id: `${id}-line-${idx}`,
+              workOrderId: id,
+              componentItemId: item.componentItemId,
+              warehouseId: rawMaterialWarehouseId,
+              plannedQuantity: item.plannedQuantity.toString(),
+              issuedQuantity: '0',
+            })
+          ),
+        })
+        await client.save(entity)
+
+        return ok({
+          id: entity.id,
+          companyId: entity.companyId,
+          workOrderNumber: entity.workOrderNumber,
+          bomId: entity.bomId,
+          outputItemId: entity.outputItemId,
+          outputWarehouseId: entity.outputWarehouseId,
+          rawMaterialWarehouseId: entity.rawMaterialWarehouseId,
+          targetQuantity: BigInt(entity.targetQuantity),
+          completedQuantity: 0n,
+          status: entity.status as any,
+          actualDirectMaterialCostMinorUnits: 0n,
+          allocatedOverheadCostMinorUnits: 0n,
+          totalCostMinorUnits: 0n,
+          unitCostMinorUnits: 0n,
+          lines: entity.lines.map((l) => ({
+            id: l.id,
+            componentItemId: l.componentItemId,
+            warehouseId: l.warehouseId,
+            plannedQuantity: BigInt(l.plannedQuantity),
+            issuedQuantity: 0n,
+          })),
+          memo: entity.memo,
+        })
+      } catch {
+        return err(new ManufacturingError(`Unable to create work order: ${id}`))
+      }
+    })
   }
 
   async releaseWorkOrder(
@@ -263,20 +359,24 @@ export class TypeOrmManufacturingService extends ManufacturingContract {
   ): Promise<
     Result<
       WorkOrderSnapshot,
-      ManufacturingError | WorkOrderNotFoundError | InvalidWorkOrderStateError
+      ManufacturingError | WorkOrderNotFoundError | InvalidWorkOrderStateError | ScopeForbiddenError
     >
   > {
     return runInTransaction<
       WorkOrderSnapshot,
-      ManufacturingError | WorkOrderNotFoundError | InvalidWorkOrderStateError
+      ManufacturingError | WorkOrderNotFoundError | InvalidWorkOrderStateError | ScopeForbiddenError
     >(this.woRepo.manager, options, async (manager) => {
-      const wo = await manager.findOne(WorkOrderEntity, {
-        where: { id },
-        relations: ['lines'],
-      })
+      const wo = await manager
+        .createQueryBuilder(WorkOrderEntity, 'wo')
+        .leftJoinAndSelect('wo.lines', 'lines')
+        .setLock('pessimistic_write')
+        .where('wo.id = :id', { id })
+        .getOne()
       if (!wo) {
         return err(new WorkOrderNotFoundError(id))
       }
+      const selectedScope = scopeMismatch(wo.companyId, options)
+      if (selectedScope) return err(new ScopeForbiddenError(selectedScope, 'work order'))
 
       if (wo.status !== 'DRAFT') {
         return err(new InvalidWorkOrderStateError(wo.status, 'release'))
@@ -335,6 +435,7 @@ export class TypeOrmManufacturingService extends ManufacturingContract {
       | WorkOrderNotFoundError
       | InvalidWorkOrderStateError
       | MaterialIssueQuantityExceededError
+      | ScopeForbiddenError
     >
   > {
     return runInTransaction<
@@ -343,24 +444,51 @@ export class TypeOrmManufacturingService extends ManufacturingContract {
       | WorkOrderNotFoundError
       | InvalidWorkOrderStateError
       | MaterialIssueQuantityExceededError
+      | ScopeForbiddenError
     >(this.woRepo.manager, options, async (client) => {
-      const wo = await client.findOne(WorkOrderEntity, {
-        where: { id: input.workOrderId },
-        relations: ['lines'],
-      })
+      const wo = await client
+        .createQueryBuilder(WorkOrderEntity, 'wo')
+        .leftJoinAndSelect('wo.lines', 'lines')
+        .setLock('pessimistic_write')
+        .where('wo.id = :id', { id: input.workOrderId })
+        .getOne()
       if (!wo) {
         return err(new WorkOrderNotFoundError(input.workOrderId))
       }
+      const selectedScope = scopeMismatch(wo.companyId, options)
+      if (selectedScope) return err(new ScopeForbiddenError(selectedScope, 'work order'))
 
       if (wo.status !== 'RELEASED' && wo.status !== 'IN_PROGRESS') {
         return err(new InvalidWorkOrderStateError(wo.status, 'issue materials'))
       }
 
+      if (input.lines.length === 0) {
+        return err(new ManufacturingError('At least one material issue line is required'))
+      }
+
+      const issueItemIds = new Set<string>()
+      for (const line of input.lines) {
+        const itemId = line.componentItemId.trim()
+        if (!itemId || line.quantity <= 0n || issueItemIds.has(itemId)) {
+          return err(new ManufacturingError('Material issue lines must be unique and positive'))
+        }
+        issueItemIds.add(itemId)
+      }
+
+      const issueReference = stableReference(
+        'issue',
+        wo.id,
+        input.issueDate.trim(),
+        ...input.lines.map((line) => `${line.componentItemId.trim()}:${line.quantity}`)
+      )
+
       let additionalCost = 0n
+      let financeCurrency: string | null = null
       for (const req of input.lines) {
-        const woLine = wo.lines.find((l) => l.componentItemId === req.componentItemId)
+        const componentItemId = req.componentItemId.trim()
+        const woLine = wo.lines.find((l) => l.componentItemId === componentItemId)
         if (!woLine) {
-          return err(new ManufacturingError(`Item ${req.componentItemId} is not in work order`))
+          return err(new ManufacturingError(`Item ${componentItemId} is not in work order`))
         }
 
         const issued = BigInt(woLine.issuedQuantity)
@@ -382,7 +510,7 @@ export class TypeOrmManufacturingService extends ManufacturingContract {
         {
           const stockRes = await this.inventory.stock(
             wo.companyId,
-            req.componentItemId,
+            componentItemId,
             woLine.warehouseId,
             { client }
           )
@@ -392,15 +520,19 @@ export class TypeOrmManufacturingService extends ManufacturingContract {
 
           unitCost = stockRes.value.averageUnitCostMinorUnits
           currency = stockRes.value.currency || 'TWD'
+          if (financeCurrency && financeCurrency !== currency) {
+            return err(new ManufacturingError('Material issue lines cannot mix currencies'))
+          }
+          financeCurrency = currency
 
           const movRes = await this.inventory.recordMovement(
             {
-              id: `mov-issue-${wo.id}-${req.componentItemId}-${Date.now()}`,
+              id: stableReference('mov', issueReference, componentItemId),
               companyId: wo.companyId,
-              itemId: req.componentItemId,
+              itemId: componentItemId,
               warehouseId: woLine.warehouseId,
               sourceType: 'WORK_ORDER_ISSUE',
-              sourceId: wo.id,
+              sourceId: issueReference,
               quantityDelta: -req.quantity,
               unitCostMinorUnits: unitCost,
               currency,
@@ -423,7 +555,7 @@ export class TypeOrmManufacturingService extends ManufacturingContract {
           new MaterialIssuedEvent(
             wo.id,
             wo.companyId,
-            req.componentItemId,
+            componentItemId,
             req.quantity,
             lineCost,
             new Date(input.issueDate)
@@ -444,9 +576,12 @@ export class TypeOrmManufacturingService extends ManufacturingContract {
       await client.save(wo)
 
       if (additionalCost > 0n) {
-        const zeroRes = Money.zero('TWD')
-        const costRes = Money.fromMinorUnits(additionalCost, 'TWD')
+        const accountingCurrency = financeCurrency ?? 'TWD'
+        const zeroRes = Money.zero(accountingCurrency)
+        const costRes = Money.fromMinorUnits(additionalCost, accountingCurrency)
         if (zeroRes.isOk && costRes.isOk) {
+          const journalSuffix = randomUUID().replaceAll('-', '').slice(0, 12)
+          const wipJournalId = `je-wip-${wo.id.slice(0, 32)}-${journalSuffix}`
           const lines: JournalLine[] = [
             {
               accountId: 'acc-1300-wip',
@@ -463,9 +598,9 @@ export class TypeOrmManufacturingService extends ManufacturingContract {
           ]
           const wipDraftRes = await this.finance.createDraft(
             {
-              id: `je-wip-${wo.id}-${Date.now()}`,
+              id: wipJournalId,
               companyId: wo.companyId,
-              number: `JE-WIP-${wo.workOrderNumber}`,
+              number: `JE-WIP-${wo.workOrderNumber.slice(0, 32)}-${journalSuffix}`,
               accountingDate: input.issueDate,
               memo: `WIP Direct Materials for WO ${wo.workOrderNumber}`,
               lines,
@@ -474,6 +609,11 @@ export class TypeOrmManufacturingService extends ManufacturingContract {
           )
           if (wipDraftRes.isErr) {
             return err(new ManufacturingError(wipDraftRes.error.message))
+          }
+
+          const wipPostRes = await this.finance.postDraft(wipJournalId, undefined, { client })
+          if (wipPostRes.isErr) {
+            return err(new ManufacturingError(wipPostRes.error.message))
           }
         }
       }
@@ -511,20 +651,24 @@ export class TypeOrmManufacturingService extends ManufacturingContract {
   ): Promise<
     Result<
       WorkOrderSnapshot,
-      ManufacturingError | WorkOrderNotFoundError | InvalidWorkOrderStateError
+      ManufacturingError | WorkOrderNotFoundError | InvalidWorkOrderStateError | ScopeForbiddenError
     >
   > {
     return runInTransaction<
       WorkOrderSnapshot,
-      ManufacturingError | WorkOrderNotFoundError | InvalidWorkOrderStateError
+      ManufacturingError | WorkOrderNotFoundError | InvalidWorkOrderStateError | ScopeForbiddenError
     >(this.woRepo.manager, options, async (client) => {
-      const wo = await client.findOne(WorkOrderEntity, {
-        where: { id: input.workOrderId },
-        relations: ['lines'],
-      })
+      const wo = await client
+        .createQueryBuilder(WorkOrderEntity, 'wo')
+        .leftJoinAndSelect('wo.lines', 'lines')
+        .setLock('pessimistic_write')
+        .where('wo.id = :id', { id: input.workOrderId })
+        .getOne()
       if (!wo) {
         return err(new WorkOrderNotFoundError(input.workOrderId))
       }
+      const selectedScope = scopeMismatch(wo.companyId, options)
+      if (selectedScope) return err(new ScopeForbiddenError(selectedScope, 'work order'))
 
       if (wo.status !== 'IN_PROGRESS') {
         return err(new InvalidWorkOrderStateError(wo.status, 'complete'))
@@ -534,8 +678,22 @@ export class TypeOrmManufacturingService extends ManufacturingContract {
         return err(new ManufacturingError('Completed quantity must be greater than zero'))
       }
 
+      if (input.completedQuantity > BigInt(wo.targetQuantity)) {
+        return err(new ManufacturingError('Completed quantity cannot exceed work order target'))
+      }
+
       const totalCost = BigInt(wo.totalCostMinorUnits)
       const unitCost = input.completedQuantity > 0n ? totalCost / input.completedQuantity : 0n
+      let currency = 'TWD'
+
+      const outputStock = await this.inventory.stock(
+        wo.companyId,
+        wo.outputItemId,
+        wo.outputWarehouseId,
+        { client }
+      )
+      if (outputStock.isErr) return err(new ManufacturingError(outputStock.error.message))
+      currency = outputStock.value.currency ?? 'TWD'
 
       {
         const recRes = await this.inventory.recordMovement(
@@ -548,7 +706,7 @@ export class TypeOrmManufacturingService extends ManufacturingContract {
             sourceId: wo.id,
             quantityDelta: input.completedQuantity,
             unitCostMinorUnits: unitCost,
-            currency: 'TWD',
+            currency,
             occurredAt: new Date(input.completionDate),
           },
           { client }
@@ -559,9 +717,10 @@ export class TypeOrmManufacturingService extends ManufacturingContract {
       }
 
       if (totalCost > 0n) {
-        const zeroRes = Money.zero('TWD')
-        const costRes = Money.fromMinorUnits(totalCost, 'TWD')
+        const zeroRes = Money.zero(currency)
+        const costRes = Money.fromMinorUnits(totalCost, currency)
         if (zeroRes.isOk && costRes.isOk) {
+          const finishedGoodsJournalId = `je-fg-${wo.id}`
           const lines: JournalLine[] = [
             {
               accountId: 'acc-1210-finished-goods',
@@ -578,7 +737,7 @@ export class TypeOrmManufacturingService extends ManufacturingContract {
           ]
           const finishedGoodsDraftRes = await this.finance.createDraft(
             {
-              id: `je-fg-${wo.id}`,
+              id: finishedGoodsJournalId,
               companyId: wo.companyId,
               number: `JE-FG-${wo.workOrderNumber}`,
               accountingDate: input.completionDate,
@@ -589,6 +748,15 @@ export class TypeOrmManufacturingService extends ManufacturingContract {
           )
           if (finishedGoodsDraftRes.isErr) {
             return err(new ManufacturingError(finishedGoodsDraftRes.error.message))
+          }
+
+          const finishedGoodsPostRes = await this.finance.postDraft(
+            finishedGoodsJournalId,
+            undefined,
+            { client }
+          )
+          if (finishedGoodsPostRes.isErr) {
+            return err(new ManufacturingError(finishedGoodsPostRes.error.message))
           }
         }
       }
@@ -645,7 +813,7 @@ export class TypeOrmManufacturingService extends ManufacturingContract {
   async getWorkOrder(
     id: string,
     options?: TransactionOptions
-  ): Promise<Result<WorkOrderSnapshot, WorkOrderNotFoundError>> {
+  ): Promise<Result<WorkOrderSnapshot, WorkOrderNotFoundError | ScopeForbiddenError>> {
     const manager = options?.client ?? this.woRepo.manager
     const entity = await manager.findOne(WorkOrderEntity, {
       where: { id },
@@ -654,6 +822,8 @@ export class TypeOrmManufacturingService extends ManufacturingContract {
     if (!entity) {
       return err(new WorkOrderNotFoundError(id))
     }
+    const selectedScope = scopeMismatch(entity.companyId, options)
+    if (selectedScope) return err(new ScopeForbiddenError(selectedScope, 'work order'))
     return ok({
       id: entity.id,
       companyId: entity.companyId,
@@ -684,131 +854,159 @@ export class TypeOrmManufacturingService extends ManufacturingContract {
   async allocateOverhead(
     input: AllocateOverheadInput,
     options?: TransactionOptions
-  ): Promise<Result<OverheadAllocationSummary, ManufacturingError | WorkOrderNotFoundError>> {
-    return runInTransaction<OverheadAllocationSummary, ManufacturingError | WorkOrderNotFoundError>(
-      this.woRepo.manager,
-      options,
-      async (client) => {
-        const wos: WorkOrderEntity[] = []
+  ): Promise<
+    Result<
+      OverheadAllocationSummary,
+      ManufacturingError | WorkOrderNotFoundError | ScopeForbiddenError
+    >
+  > {
+    return runInTransaction<
+      OverheadAllocationSummary,
+      ManufacturingError | WorkOrderNotFoundError | ScopeForbiddenError
+    >(this.woRepo.manager, options, async (client) => {
+      const companyId = input.companyId.trim()
+      const currency = (input.currency || 'TWD').trim().toUpperCase()
+      const workOrderIds = input.workOrderIds.map((id) => id.trim())
+      if (
+        !companyId ||
+        workOrderIds.length === 0 ||
+        workOrderIds.some((id, index) => !id || workOrderIds.indexOf(id) !== index) ||
+        input.totalPoolAmountMinorUnits < 0n ||
+        !/^[A-Z]{3}$/.test(currency)
+      ) {
+        return err(new ManufacturingError('Overhead allocation input is invalid'))
+      }
 
-        for (const id of input.workOrderIds) {
-          const wo = await client.findOne(WorkOrderEntity, {
-            where: { id },
-            relations: ['lines'],
-          })
-          if (!wo) {
-            return err(new WorkOrderNotFoundError(id))
-          }
-          wos.push(wo)
+      const selectedScope = scopeMismatch(companyId, options)
+      if (selectedScope) return err(new ScopeForbiddenError(selectedScope, 'overhead allocation'))
+
+      const wos: WorkOrderEntity[] = []
+
+      for (const id of workOrderIds) {
+        const wo = await client
+          .createQueryBuilder(WorkOrderEntity, 'wo')
+          .leftJoinAndSelect('wo.lines', 'lines')
+          .setLock('pessimistic_write')
+          .where('wo.id = :id', { id })
+          .getOne()
+        if (!wo || wo.companyId !== companyId) {
+          return err(new WorkOrderNotFoundError(id))
         }
+        wos.push(wo)
+      }
 
-        const targets = wos.map((wo) => {
-          const completedQty = BigInt(wo.completedQuantity)
-          const targetQty = BigInt(wo.targetQuantity)
-          const materialCost = BigInt(wo.actualDirectMaterialCostMinorUnits)
-          const weight =
-            input.allocationBase === 'COMPLETED_QUANTITY'
-              ? completedQty > 0n
-                ? completedQty
-                : targetQty
-              : materialCost
-          return {
-            workOrderId: wo.id,
-            weight: weight > 0n ? weight : 1n,
-          }
-        })
-
-        const allocationResult = OverheadAllocationEngine.tryAllocate({
-          totalPoolAmountMinorUnits: input.totalPoolAmountMinorUnits,
-          currency: input.currency || 'TWD',
-          targets,
-        })
-        if (allocationResult.isErr) return err(allocationResult.error)
-        const allocationResults = allocationResult.value
-
-        const details: OverheadAllocationDetail[] = []
-
-        for (const alloc of allocationResults) {
-          const wo = wos.find((w) => w.id === alloc.workOrderId)!
-          const currentOverhead = BigInt(wo.allocatedOverheadCostMinorUnits)
-          const materialCost = BigInt(wo.actualDirectMaterialCostMinorUnits)
-          const completedQty = BigInt(wo.completedQuantity)
-          const targetQty = BigInt(wo.targetQuantity)
-
-          const newOverhead = currentOverhead + alloc.allocatedAmountMinorUnits
-          const newTotal = materialCost + newOverhead
-          const divisor = completedQty > 0n ? completedQty : targetQty
-          const newUnitCost = divisor > 0n ? newTotal / divisor : 0n
-
-          wo.allocatedOverheadCostMinorUnits = newOverhead.toString()
-          wo.totalCostMinorUnits = newTotal.toString()
-          wo.unitCostMinorUnits = newUnitCost.toString()
-          await client.save(wo)
-
-          details.push({
-            workOrderId: wo.id,
-            allocatedAmountMinorUnits: alloc.allocatedAmountMinorUnits,
-            newTotalCostMinorUnits: newTotal,
-            newUnitCostMinorUnits: newUnitCost,
-          })
+      const targets = wos.map((wo) => {
+        const completedQty = BigInt(wo.completedQuantity)
+        const targetQty = BigInt(wo.targetQuantity)
+        const materialCost = BigInt(wo.actualDirectMaterialCostMinorUnits)
+        const weight =
+          input.allocationBase === 'COMPLETED_QUANTITY'
+            ? completedQty > 0n
+              ? completedQty
+              : targetQty
+            : materialCost
+        return {
+          workOrderId: wo.id,
+          weight: weight > 0n ? weight : 1n,
         }
+      })
 
-        if (input.totalPoolAmountMinorUnits > 0n) {
-          const zeroRes = Money.zero(input.currency || 'TWD')
-          const poolRes = Money.fromMinorUnits(
-            input.totalPoolAmountMinorUnits,
-            input.currency || 'TWD'
-          )
-          if (zeroRes.isOk && poolRes.isOk) {
-            const lines: JournalLine[] = [
-              {
-                accountId: 'acc-1300-wip',
-                debit: poolRes.value,
-                credit: zeroRes.value,
-                memo: 'Overhead allocation to WIP',
-              },
-              {
-                accountId: input.overheadAccount || 'acc-5100-overhead-applied',
-                debit: zeroRes.value,
-                credit: poolRes.value,
-                memo: 'Applied manufacturing overhead',
-              },
-            ]
-            const overheadDraftRes = await this.finance.createDraft(
-              {
-                id: `je-overhead-${Date.now()}`,
-                companyId: input.companyId,
-                number: `JE-OH-${Date.now()}`,
-                accountingDate: input.accountingDate,
-                memo: 'Manufacturing Overhead Allocation',
-                lines,
-              },
-              { client }
-            )
-            if (overheadDraftRes.isErr) {
-              return err(new ManufacturingError(overheadDraftRes.error.message))
-            }
-          }
-        }
+      const allocationResult = OverheadAllocationEngine.tryAllocate({
+        totalPoolAmountMinorUnits: input.totalPoolAmountMinorUnits,
+        currency,
+        targets,
+      })
+      if (allocationResult.isErr) return err(allocationResult.error)
+      const allocationResults = allocationResult.value
 
-        const eventResult = await this.outbox.enqueue(
-          OverheadAllocatedEvent.EVENT_NAME,
-          new OverheadAllocatedEvent(
-            input.companyId,
-            input.totalPoolAmountMinorUnits,
-            details.length,
-            new Date()
-          ),
-          { client }
-        )
-        if (eventResult.isErr) return err(new ManufacturingError(eventResult.error.message))
+      const details: OverheadAllocationDetail[] = []
 
-        return ok({
-          companyId: input.companyId,
-          totalPoolAmountMinorUnits: input.totalPoolAmountMinorUnits,
-          allocations: details,
+      for (const alloc of allocationResults) {
+        const wo = wos.find((w) => w.id === alloc.workOrderId)!
+        const currentOverhead = BigInt(wo.allocatedOverheadCostMinorUnits)
+        const materialCost = BigInt(wo.actualDirectMaterialCostMinorUnits)
+        const completedQty = BigInt(wo.completedQuantity)
+        const targetQty = BigInt(wo.targetQuantity)
+
+        const newOverhead = currentOverhead + alloc.allocatedAmountMinorUnits
+        const newTotal = materialCost + newOverhead
+        const divisor = completedQty > 0n ? completedQty : targetQty
+        const newUnitCost = divisor > 0n ? newTotal / divisor : 0n
+
+        wo.allocatedOverheadCostMinorUnits = newOverhead.toString()
+        wo.totalCostMinorUnits = newTotal.toString()
+        wo.unitCostMinorUnits = newUnitCost.toString()
+        await client.save(wo)
+
+        details.push({
+          workOrderId: wo.id,
+          allocatedAmountMinorUnits: alloc.allocatedAmountMinorUnits,
+          newTotalCostMinorUnits: newTotal,
+          newUnitCostMinorUnits: newUnitCost,
         })
       }
-    )
+
+      if (input.totalPoolAmountMinorUnits > 0n) {
+        const zeroRes = Money.zero(currency)
+        const poolRes = Money.fromMinorUnits(input.totalPoolAmountMinorUnits, currency)
+        if (zeroRes.isOk && poolRes.isOk) {
+          const journalSuffix = randomUUID().replaceAll('-', '').slice(0, 12)
+          const overheadJournalId = `je-overhead-${journalSuffix}`
+          const lines: JournalLine[] = [
+            {
+              accountId: 'acc-1300-wip',
+              debit: poolRes.value,
+              credit: zeroRes.value,
+              memo: 'Overhead allocation to WIP',
+            },
+            {
+              accountId: input.overheadAccount || 'acc-5100-overhead-applied',
+              debit: zeroRes.value,
+              credit: poolRes.value,
+              memo: 'Applied manufacturing overhead',
+            },
+          ]
+          const overheadDraftRes = await this.finance.createDraft(
+            {
+              id: overheadJournalId,
+              companyId,
+              number: `JE-OH-${journalSuffix}`,
+              accountingDate: input.accountingDate,
+              memo: 'Manufacturing Overhead Allocation',
+              lines,
+            },
+            { client }
+          )
+          if (overheadDraftRes.isErr) {
+            return err(new ManufacturingError(overheadDraftRes.error.message))
+          }
+
+          const overheadPostRes = await this.finance.postDraft(overheadJournalId, undefined, {
+            client,
+          })
+          if (overheadPostRes.isErr) {
+            return err(new ManufacturingError(overheadPostRes.error.message))
+          }
+        }
+      }
+
+      const eventResult = await this.outbox.enqueue(
+        OverheadAllocatedEvent.EVENT_NAME,
+        new OverheadAllocatedEvent(
+          companyId,
+          input.totalPoolAmountMinorUnits,
+          details.length,
+          new Date()
+        ),
+        { client }
+      )
+      if (eventResult.isErr) return err(new ManufacturingError(eventResult.error.message))
+
+      return ok({
+        companyId,
+        totalPoolAmountMinorUnits: input.totalPoolAmountMinorUnits,
+        allocations: details,
+      })
+    })
   }
 }

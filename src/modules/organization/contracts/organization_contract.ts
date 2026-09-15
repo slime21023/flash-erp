@@ -1,5 +1,6 @@
 import type { Result } from '@platform/fp/index.js'
 import type { TransactionOptions } from '@platform/persistence/index.js'
+import type { ScopeForbiddenError } from '@platform/security/index.js'
 import type {
   InvalidOrganizationUnitError,
   OrganizationUnitAlreadyExistsError,
@@ -25,7 +26,10 @@ export type RegisterOrganizationUnitInput = Readonly<{
 }>
 
 export type RegisterOrganizationUnitError =
-  InvalidOrganizationUnitError | OrganizationUnitAlreadyExistsError | OrganizationUnitNotFoundError
+  | InvalidOrganizationUnitError
+  | OrganizationUnitAlreadyExistsError
+  | OrganizationUnitNotFoundError
+  | ScopeForbiddenError
 
 export abstract class OrganizationContract {
   abstract registerUnit(
@@ -36,5 +40,5 @@ export abstract class OrganizationContract {
   abstract findUnit(
     id: string,
     options?: TransactionOptions
-  ): Promise<Result<OrganizationUnitSnapshot, OrganizationUnitNotFoundError>>
+  ): Promise<Result<OrganizationUnitSnapshot, OrganizationUnitNotFoundError | ScopeForbiddenError>>
 }

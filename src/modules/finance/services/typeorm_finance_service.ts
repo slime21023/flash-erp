@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common'
 import { InjectRepository } from '@nestjs/typeorm'
-import { DataSource, Repository, EntityManager } from 'typeorm'
+import { Repository, EntityManager } from 'typeorm'
 import { err, ok } from '@platform/fp/index.js'
 import type { Result } from '@platform/fp/index.js'
 import {
@@ -9,6 +9,8 @@ import {
   runInTransaction,
 } from '@platform/persistence/index.js'
 import { AuditContract } from '@modules/audit/contracts/index.js'
+import { scopeMismatch } from '@platform/context/index.js'
+import { ScopeForbiddenError } from '@platform/security/index.js'
 import { CompanyAccountingSettingsContract } from '../contracts/index.js'
 import {
   AccountingPeriodError,
@@ -39,74 +41,33 @@ export class TypeOrmFinanceService extends FinanceContract {
   constructor(
     private readonly audit: AuditContract,
     private readonly settings: CompanyAccountingSettingsContract,
-    private readonly dataSource: DataSource,
     @InjectRepository(JournalEntryEntity)
     private readonly entryRepo: Repository<JournalEntryEntity>
   ) {
     super()
   }
 
-  async post(
-    entry: JournalEntry,
-    options?: TransactionOptions
-  ): Promise<Result<JournalEntry, JournalEntryAlreadyPostedError>> {
-    return runInTransaction<JournalEntry, JournalEntryAlreadyPostedError>(
-      this.entryRepo.manager,
-      options,
-      async (client) => {
-        const existing = await client.findOne(JournalEntryEntity, { where: { id: entry.id } })
-        if (existing) {
-          return err(new JournalEntryAlreadyPostedError(entry.id))
-        }
-
-        try {
-          const journalEntry = client.create(JournalEntryEntity, {
-            id: entry.id,
-            companyId: 'default',
-            number: entry.id,
-            accountingDate: new Date().toISOString().slice(0, 10),
-            status: 'POSTED',
-            currency: entry.currency,
-            totalDebitMinorUnits: entry.totalDebit.minorUnits.toString(),
-            totalCreditMinorUnits: entry.totalCredit.minorUnits.toString(),
-            postedAt: new Date(),
-          })
-          await client.save(journalEntry)
-
-          const lines = entry.lines.map((line, index) =>
-            client.create(JournalEntryLineEntity, {
-              journalEntryId: entry.id,
-              accountId: line.accountId,
-              debitMinorUnits: line.debit.minorUnits.toString(),
-              creditMinorUnits: line.credit.minorUnits.toString(),
-              lineNumber: index + 1,
-              memo: line.memo || null,
-            })
-          )
-          await client.save(lines)
-          return ok(entry)
-        } catch {
-          return err(new JournalEntryAlreadyPostedError(entry.id))
-        }
-      }
-    )
-  }
-
   async createDraft(
     input: CreateJournalEntryDraftInput,
     options?: TransactionOptions
-  ): Promise<Result<JournalEntryDraftSnapshot, JournalEntryPersistenceError>> {
-    return runInTransaction<JournalEntryDraftSnapshot, JournalEntryPersistenceError>(
-      this.entryRepo.manager,
-      options,
-      (client) => this.createDraftWithClient(input, client)
+  ): Promise<
+    Result<JournalEntryDraftSnapshot, JournalEntryPersistenceError | ScopeForbiddenError>
+  > {
+    return runInTransaction<
+      JournalEntryDraftSnapshot,
+      JournalEntryPersistenceError | ScopeForbiddenError
+    >(this.entryRepo.manager, options, (client) =>
+      this.createDraftWithClient(input, client, options)
     )
   }
 
   private async createDraftWithClient(
     input: CreateJournalEntryDraftInput,
-    manager: EntityManager
-  ): Promise<Result<JournalEntryDraftSnapshot, JournalEntryPersistenceError>> {
+    manager: EntityManager,
+    options?: TransactionOptions
+  ): Promise<
+    Result<JournalEntryDraftSnapshot, JournalEntryPersistenceError | ScopeForbiddenError>
+  > {
     const entry = JournalEntry.create(input.id, input.lines)
     if (entry.isErr) {
       return err(new JournalEntryPersistenceError(entry.error.message))
@@ -120,8 +81,12 @@ export class TypeOrmFinanceService extends FinanceContract {
       )
     }
 
+    const selectedScope = scopeMismatch(companyId, options)
+    if (selectedScope) return err(new ScopeForbiddenError(selectedScope, 'journal entry'))
+
     const settings = await this.settings.ensureBaseCurrency(companyId, entry.value.currency, {
       client: manager,
+      scope: options?.scope,
     })
     if (settings.isErr) {
       return err(new JournalEntryPersistenceError(settings.error.message))
@@ -171,6 +136,7 @@ export class TypeOrmFinanceService extends FinanceContract {
       | AccountingPeriodError
       | InactiveAccountError
       | JournalEntryPersistenceError
+      | ScopeForbiddenError
     >
   > {
     return runInTransaction<
@@ -180,13 +146,17 @@ export class TypeOrmFinanceService extends FinanceContract {
       | AccountingPeriodError
       | InactiveAccountError
       | JournalEntryPersistenceError
-    >(this.entryRepo.manager, options, (client) => this.postWithClient(entryId, context, client))
+      | ScopeForbiddenError
+    >(this.entryRepo.manager, options, (client) =>
+      this.postWithClient(entryId, context, client, options)
+    )
   }
 
   private async postWithClient(
     entryId: string,
     context: FinanceWriteContext | undefined,
-    manager: EntityManager
+    manager: EntityManager,
+    options?: TransactionOptions
   ): Promise<
     Result<
       JournalEntryDraftSnapshot,
@@ -195,6 +165,7 @@ export class TypeOrmFinanceService extends FinanceContract {
       | AccountingPeriodError
       | InactiveAccountError
       | JournalEntryPersistenceError
+      | ScopeForbiddenError
     >
   > {
     try {
@@ -205,6 +176,8 @@ export class TypeOrmFinanceService extends FinanceContract {
         .getOne()
 
       if (!entry) return err(new JournalEntryNotFoundError(entryId))
+      const selectedScope = scopeMismatch(entry.companyId, options)
+      if (selectedScope) return err(new ScopeForbiddenError(selectedScope, 'journal entry'))
       if (entry.status !== 'DRAFT') return err(new JournalEntryAlreadyPostedError(entryId))
 
       const accountingDate =
@@ -212,15 +185,18 @@ export class TypeOrmFinanceService extends FinanceContract {
           ? entry.accountingDate
           : (entry.accountingDate as any).toISOString().slice(0, 10)
 
-      const period = await manager
+      const periods = await manager
         .createQueryBuilder(AccountingPeriodEntity, 'p')
+        .setLock('pessimistic_write')
         .where('p.company_id = :companyId', { companyId: entry.companyId })
         .andWhere('p.status = :status', { status: 'OPEN' })
         .andWhere('p.starts_on <= :accountingDate', { accountingDate })
         .andWhere('p.ends_on >= :accountingDate', { accountingDate })
-        .getOne()
+        .orderBy('p.starts_on', 'ASC')
+        .getMany()
 
-      if (!period) return err(new AccountingPeriodError(entry.companyId, accountingDate))
+      if (periods.length !== 1)
+        return err(new AccountingPeriodError(entry.companyId, accountingDate))
 
       const lines = await manager.find(JournalEntryLineEntity, {
         where: { journalEntryId: entryId },
@@ -269,10 +245,13 @@ export class TypeOrmFinanceService extends FinanceContract {
     from: string,
     to: string,
     options?: TransactionOptions
-  ): Promise<Result<readonly LedgerLineSnapshot[], FinanceQueryError>> {
+  ): Promise<Result<readonly LedgerLineSnapshot[], FinanceQueryError | ScopeForbiddenError>> {
     if (!companyId.trim() || !TypeOrmFinanceService.validDateRange(from, to)) {
       return err(new FinanceQueryError('companyId and an ordered ISO date range are required'))
     }
+
+    const selectedScope = scopeMismatch(companyId, options)
+    if (selectedScope) return err(new ScopeForbiddenError(selectedScope, 'general ledger'))
 
     const manager = options?.client ?? this.entryRepo.manager
     try {
@@ -326,10 +305,13 @@ export class TypeOrmFinanceService extends FinanceContract {
     from: string,
     to: string,
     options?: TransactionOptions
-  ): Promise<Result<readonly TrialBalanceLine[], FinanceQueryError>> {
+  ): Promise<Result<readonly TrialBalanceLine[], FinanceQueryError | ScopeForbiddenError>> {
     if (!companyId.trim() || !TypeOrmFinanceService.validDateRange(from, to)) {
       return err(new FinanceQueryError('companyId and an ordered ISO date range are required'))
     }
+
+    const selectedScope = scopeMismatch(companyId, options)
+    if (selectedScope) return err(new ScopeForbiddenError(selectedScope, 'trial balance'))
 
     const manager = options?.client ?? this.entryRepo.manager
     try {
@@ -381,6 +363,7 @@ export class TypeOrmFinanceService extends FinanceContract {
       | JournalEntryAlreadyReversedError
       | AccountingPeriodError
       | JournalEntryPersistenceError
+      | ScopeForbiddenError
     >
   > {
     return runInTransaction<
@@ -390,8 +373,9 @@ export class TypeOrmFinanceService extends FinanceContract {
       | JournalEntryAlreadyReversedError
       | AccountingPeriodError
       | JournalEntryPersistenceError
+      | ScopeForbiddenError
     >(this.entryRepo.manager, options, (client) =>
-      this.reverseWithClient(entryId, input, context, client)
+      this.reverseWithClient(entryId, input, context, client, options)
     )
   }
 
@@ -399,7 +383,8 @@ export class TypeOrmFinanceService extends FinanceContract {
     entryId: string,
     input: ReverseJournalEntryInput,
     context: FinanceWriteContext | undefined,
-    manager: EntityManager
+    manager: EntityManager,
+    options?: TransactionOptions
   ): Promise<
     Result<
       JournalEntryDraftSnapshot,
@@ -408,6 +393,7 @@ export class TypeOrmFinanceService extends FinanceContract {
       | JournalEntryAlreadyReversedError
       | AccountingPeriodError
       | JournalEntryPersistenceError
+      | ScopeForbiddenError
     >
   > {
     if (
@@ -428,6 +414,8 @@ export class TypeOrmFinanceService extends FinanceContract {
         .getOne()
 
       if (!source) return err(new JournalEntryNotFoundError(entryId))
+      const selectedScope = scopeMismatch(source.companyId, options)
+      if (selectedScope) return err(new ScopeForbiddenError(selectedScope, 'journal entry'))
       if (source.status !== 'POSTED') {
         return err(new JournalEntryPersistenceError('Only posted journal entries can be reversed'))
       }
@@ -437,15 +425,19 @@ export class TypeOrmFinanceService extends FinanceContract {
       })
       if (existingReversal) return err(new JournalEntryAlreadyReversedError(entryId))
 
-      const period = await manager
+      const periods = await manager
         .createQueryBuilder(AccountingPeriodEntity, 'p')
+        .setLock('pessimistic_write')
         .where('p.company_id = :companyId', { companyId: source.companyId })
         .andWhere('p.status = :status', { status: 'OPEN' })
         .andWhere('p.starts_on <= :accountingDate', { accountingDate: input.accountingDate })
         .andWhere('p.ends_on >= :accountingDate', { accountingDate: input.accountingDate })
-        .getOne()
+        .orderBy('p.starts_on', 'ASC')
+        .getMany()
 
-      if (!period) return err(new AccountingPeriodError(source.companyId, input.accountingDate))
+      if (periods.length !== 1) {
+        return err(new AccountingPeriodError(source.companyId, input.accountingDate))
+      }
 
       const sourceLines = await manager.find(JournalEntryLineEntity, {
         where: { journalEntryId: entryId },

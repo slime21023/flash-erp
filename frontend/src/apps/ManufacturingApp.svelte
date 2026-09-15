@@ -1,116 +1,34 @@
 <script lang="ts">
-  import Statusbar from '../lib/components/Statusbar.svelte'
+  import { ApiError, apiRequest, readAuthSession } from '../lib/api.js'
 
-  let currentStage = $state<'DRAFT' | 'RELEASED' | 'IN_PROGRESS' | 'COMPLETED'>('DRAFT')
-  let plannedQty = $state(50)
-  let notification = $state<string | null>(null)
+  type Bom = { id: string; companyId: string; code: string; name: string; parentItemId: string; baseQuantity: string; lines: { componentItemId: string; quantityPerBase: string; scrapPercentageBasisPoints: number }[] }
+  type WorkOrder = { id: string; companyId: string; workOrderNumber: string; bomId: string; outputItemId: string; outputWarehouseId: string; rawMaterialWarehouseId: string; targetQuantity: string; completedQuantity: string; status: string; actualDirectMaterialCostMinorUnits: string; totalCostMinorUnits: string; unitCostMinorUnits: string; lines: { componentItemId: string; plannedQuantity: string; issuedQuantity: string }[] }
+  const session = readAuthSession()
+  let companyId = $state(session?.user.organizationUnitIds[0] ?? '')
+  let bomId = $state(''); let bomCode = $state(''); let bomName = $state(''); let parentItemId = $state(''); let componentItemId = $state(''); let quantityPerBase = $state('1'); let baseQuantity = $state('1'); let scrapPercentageBasisPoints = $state('0')
+  let workOrderId = $state(''); let workOrderNumber = $state(''); let outputWarehouseId = $state(''); let rawMaterialWarehouseId = $state(''); let targetQuantity = $state('1')
+  let issueComponentItemId = $state(''); let issueQuantity = $state('1'); let completedQuantity = $state('1')
+  let overheadAmountMinorUnits = $state('0'); let overheadAccount = $state(''); let allocationBase = $state<'COMPLETED_QUANTITY' | 'DIRECT_MATERIAL_COST'>('COMPLETED_QUANTITY')
+  let bom = $state<Bom | null>(null); let workOrder = $state<WorkOrder | null>(null); let message = $state<string | null>(null); let busy = $state(false)
 
-  const stages = [
-    { id: 'DRAFT', label: '草稿 (Draft)' },
-    { id: 'RELEASED', label: '已下達 (Released)' },
-    { id: 'IN_PROGRESS', label: '領料生產中 (In Progress)' },
-    { id: 'COMPLETED', label: '完工入庫 (Completed)' },
-  ]
-
-  // BOM with ceiling calculation
-  const bomComponents = [
-    { sku: 'RAW-CHIP', name: '主晶片組', qtyPerBase: 1, scrapBps: 200 }, // 2% scrap
-    { sku: 'RAW-PCB', name: '多層印刷電路板', qtyPerBase: 1, scrapBps: 100 }, // 1% scrap
-    { sku: 'RAW-CAP', name: '固態電容', qtyPerBase: 8, scrapBps: 500 }, // 5% scrap
-  ]
-
-  function releaseOrder() {
-    currentStage = 'RELEASED'
-    notification = '工單已下達！依 BOM 需求展算引擎 (BomExplosionEngine) 完成天花板整數除法算料。'
-  }
-
-  function issueMaterials() {
-    currentStage = 'IN_PROGRESS'
-    notification = '原料已扣庫出庫！自動生成借記在製品 (WIP)、貸記原材料 (Raw Materials) 之會計傳票。'
-  }
-
-  function completeOrder() {
-    currentStage = 'COMPLETED'
-    notification = '完工入庫完成！自動產生成品入庫及在製品轉產成品結轉傳票，無尾差製費分攤準備就緒。'
-  }
-
-  function reset() {
-    currentStage = 'DRAFT'
-    notification = null
-  }
+  function errorMessage(error: unknown) { return error instanceof ApiError || error instanceof Error ? error.message : '操作失敗' }
+  async function run(action: () => Promise<void>) { busy = true; message = null; try { await action() } catch (error) { message = errorMessage(error) } finally { busy = false } }
+  async function registerBom() { await run(async () => { bomId = bomId || `bom-${crypto.randomUUID()}`; bom = await apiRequest<Bom>('/manufacturing/boms', { method: 'POST', body: { id: bomId, companyId, code: bomCode, name: bomName, parentItemId, baseQuantity, lines: [{ componentItemId, quantityPerBase, scrapPercentageBasisPoints: Number(scrapPercentageBasisPoints) }] } }); message = `BOM ${bom.code} 已建立。` }) }
+  async function createWorkOrder() { await run(async () => { workOrderId = workOrderId || `wo-${crypto.randomUUID()}`; workOrderNumber = workOrderNumber || `WO-${Date.now()}`; const created = await apiRequest<WorkOrder>('/manufacturing/work-orders', { method: 'POST', body: { id: workOrderId, companyId, workOrderNumber, bomId, outputWarehouseId, rawMaterialWarehouseId, targetQuantity } }); workOrder = created; issueComponentItemId = created.lines[0]?.componentItemId ?? issueComponentItemId; message = `工單 ${created.workOrderNumber} 已建立。` }) }
+  async function releaseWorkOrder() { const current = workOrder; if (!current) return; await run(async () => { const updated = await apiRequest<WorkOrder>(`/manufacturing/work-orders/${encodeURIComponent(current.id)}/release`, { method: 'POST' }); workOrder = updated; message = `工單 ${updated.workOrderNumber} 已下達。` }) }
+  async function issueMaterials() { const current = workOrder; if (!current) return; await run(async () => { workOrder = await apiRequest<WorkOrder>(`/manufacturing/work-orders/${encodeURIComponent(current.id)}/issue-materials`, { method: 'POST', body: { issueDate: new Date().toISOString().slice(0, 10), lines: [{ componentItemId: issueComponentItemId, quantity: issueQuantity }] } }); message = '原料已發料。' }) }
+  async function completeWorkOrder() { const current = workOrder; if (!current) return; await run(async () => { workOrder = await apiRequest<WorkOrder>(`/manufacturing/work-orders/${encodeURIComponent(current.id)}/complete`, { method: 'POST', body: { completedQuantity, completionDate: new Date().toISOString().slice(0, 10) } }); message = '工單已完工。' }) }
+  async function allocateOverhead() { await run(async () => { await apiRequest('/manufacturing/overhead/allocate', { method: 'POST', body: { companyId, overheadAccount: overheadAccount || undefined, totalPoolAmountMinorUnits: overheadAmountMinorUnits, accountingDate: new Date().toISOString().slice(0, 10), allocationBase, workOrderIds: workOrder ? [workOrder.id] : [] } }); message = '製費已分攤。' }) }
 </script>
 
 <div class="max-w-7xl mx-auto p-6 space-y-6">
-  <!-- Statusbar -->
-  <Statusbar
-    {stages}
-    {currentStage}
-    actions={[
-      ...(currentStage === 'DRAFT'
-        ? [{ id: 'release', label: '下達生產工單 (Release WO)', primary: true, onClick: releaseOrder }]
-        : []),
-      ...(currentStage === 'RELEASED'
-        ? [{ id: 'issue', label: '領料出庫 (Issue Materials)', primary: true, onClick: issueMaterials }]
-        : []),
-      ...(currentStage === 'IN_PROGRESS'
-        ? [{ id: 'complete', label: '工單完工入庫 (Complete WO)', primary: true, onClick: completeOrder }]
-        : []),
-      { id: 'reset', label: '重設示範', onClick: reset },
-    ]}
-  />
-
-  {#if notification}
-    <div class="p-3.5 rounded-lg bg-rose-50 border border-rose-200 text-rose-900 text-xs flex items-center justify-between animate-in fade-in">
-      <span>⚙️ {notification}</span>
-      <button onclick={() => notification = null} class="text-rose-500 hover:text-rose-700 font-bold ml-2">×</button>
-    </div>
-  {/if}
-
-  <!-- Header -->
-  <div class="bg-white rounded-xl border border-slate-200 shadow-xs p-6 space-y-6">
-    <div class="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 pb-4 border-b border-slate-100">
-      <div>
-        <span class="text-[10px] font-bold text-rose-600 uppercase tracking-wider">生產工單 (Work Order)</span>
-        <h2 class="text-xl font-extrabold text-slate-900">WO-2026-0008 • 邊緣運算伺服器 (成品)</h2>
-      </div>
-      <div class="text-right">
-        <span class="text-xs text-slate-400">計劃生產數量</span>
-        <p class="text-2xl font-black text-slate-900">{plannedQty} <span class="text-xs font-medium text-slate-500">台</span></p>
-      </div>
-    </div>
-
-    <!-- BOM Explosion Calculation Table -->
-    <div class="space-y-2">
-      <div class="flex items-center justify-between">
-        <h3 class="text-xs font-bold text-slate-700">物料清單需求展算 (BOM Explosion with Ceiling Division)</h3>
-        <span class="text-[11px] text-slate-400 font-mono">Planned = ⌈(Target × Qty × (10000 + scrapBps)) / 10000⌉</span>
-      </div>
-
-      <div class="overflow-x-auto">
-        <table class="w-full text-left text-xs border-collapse">
-          <thead>
-            <tr class="bg-slate-50 border-y border-slate-200 text-slate-600 font-semibold">
-              <th class="py-2.5 px-3">子料件 SKU</th>
-              <th class="py-2.5 px-3">料品規格</th>
-              <th class="py-2.5 px-3 text-right">基準用量</th>
-              <th class="py-2.5 px-3 text-right">損耗率 (bps)</th>
-              <th class="py-2.5 px-3 text-right font-bold text-slate-900">向上取整計劃發料量</th>
-            </tr>
-          </thead>
-          <tbody class="divide-y divide-slate-100">
-            {#each bomComponents as comp}
-              {@const req = Math.ceil((plannedQty * comp.qtyPerBase * (10000 + comp.scrapBps)) / 10000)}
-              <tr class="hover:bg-slate-50/70">
-                <td class="py-2.5 px-3 font-mono font-medium text-slate-800">{comp.sku}</td>
-                <td class="py-2.5 px-3 text-slate-700">{comp.name}</td>
-                <td class="py-2.5 px-3 text-right text-slate-700">{comp.qtyPerBase}</td>
-                <td class="py-2.5 px-3 text-right text-slate-500 font-mono">{comp.scrapBps / 100}%</td>
-                <td class="py-2.5 px-3 text-right font-bold text-rose-700 font-mono">{req}</td>
-              </tr>
-            {/each}
-          </tbody>
-        </table>
-      </div>
-    </div>
-  </div>
+  <div><span class="label">生產製造與成本分攤 (Manufacturing)</span><h2 class="title">BOM、工單與製費</h2><p class="hint">工單狀態與成本由 Manufacturing API 計算。</p></div>
+  {#if message}<div class="message" role="status">{message}</div>{/if}
+  <section class="panel"><h3>BOM</h3><div class="grid"><label>BOM ID<input bind:value={bomId} placeholder="留白自動產生" /></label><label>公司 ID<input bind:value={companyId} /></label><label>代碼<input bind:value={bomCode} /></label><label>名稱<input bind:value={bomName} /></label><label>成品料品 ID<input bind:value={parentItemId} /></label><label>元件料品 ID<input bind:value={componentItemId} /></label><label>基準數量<input bind:value={baseQuantity} /></label><label>單位用量<input bind:value={quantityPerBase} /></label><label>損耗 bps<input bind:value={scrapPercentageBasisPoints} /></label><button onclick={registerBom} disabled={busy}>建立 BOM</button></div>{#if bom}<pre>{JSON.stringify(bom, null, 2)}</pre>{/if}</section>
+  <section class="panel"><h3>工單</h3><div class="grid"><label>工單 ID<input bind:value={workOrderId} placeholder="留白自動產生" /></label><label>工單號碼<input bind:value={workOrderNumber} placeholder="留白自動產生" /></label><label>BOM ID<input bind:value={bomId} /></label><label>成品倉庫 ID<input bind:value={outputWarehouseId} /></label><label>原料倉庫 ID<input bind:value={rawMaterialWarehouseId} /></label><label>目標數量<input bind:value={targetQuantity} /></label><button onclick={createWorkOrder} disabled={busy}>建立工單</button></div>{#if workOrder}<div class="result"><strong>{workOrder.workOrderNumber}</strong><span>{workOrder.status}</span><span>成品：{workOrder.outputItemId}</span><button onclick={releaseWorkOrder} disabled={busy || workOrder.status !== 'DRAFT'}>下達</button></div><div class="grid border-t border-slate-100 pt-3"><label>元件料品 ID<input bind:value={issueComponentItemId} /></label><label>發料數量<input bind:value={issueQuantity} /></label><button onclick={issueMaterials} disabled={busy || workOrder.status !== 'RELEASED'}>發料</button><label>完工數量<input bind:value={completedQuantity} /></label><button onclick={completeWorkOrder} disabled={busy || workOrder.status !== 'IN_PROGRESS'}>完工</button></div><pre>{JSON.stringify(workOrder, null, 2)}</pre>{/if}</section>
+  <section class="panel"><h3>製費分攤</h3><div class="grid"><label>製費金額<input bind:value={overheadAmountMinorUnits} inputmode="numeric" /></label><label>製費科目 ID<input bind:value={overheadAccount} /></label><label>分攤基礎<select bind:value={allocationBase}><option value="COMPLETED_QUANTITY">COMPLETED_QUANTITY</option><option value="DIRECT_MATERIAL_COST">DIRECT_MATERIAL_COST</option></select></label><button onclick={allocateOverhead} disabled={busy || !workOrder}>分攤</button></div></section>
 </div>
+
+<style>
+  .label { font-size: .625rem; font-weight: 700; color: #be123c; text-transform: uppercase; letter-spacing: .08em; } .title { margin-top: .25rem; font-size: 1.25rem; font-weight: 800; } .hint { margin-top: .25rem; color: #64748b; font-size: .75rem; } .panel { display: grid; gap: 1rem; background: white; border: 1px solid #e2e8f0; border-radius: .75rem; padding: 1.25rem; } h3 { font-size: .875rem; font-weight: 700; } .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr)); gap: .75rem; font-size: .75rem; } label { display: grid; gap: .25rem; color: #475569; } input, select { width: 100%; border: 1px solid #cbd5e1; border-radius: .5rem; padding: .5rem .625rem; } button { align-self: end; border-radius: .5rem; background: #e11d48; color: white; padding: .5rem .75rem; font-size: .75rem; font-weight: 700; } button:disabled { opacity: .5; } .message { border: 1px solid #fecdd3; border-radius: .5rem; background: #fff1f2; padding: .75rem; color: #9f1239; font-size: .75rem; } .result { display: flex; flex-wrap: wrap; align-items: end; gap: .75rem; border-top: 1px solid #f1f5f9; padding-top: .75rem; font-size: .75rem; } .result span { color: #64748b; } pre { overflow: auto; max-width: 100%; border-radius: .5rem; background: #0f172a; padding: .75rem; color: #e2e8f0; font-size: .75rem; }
+</style>

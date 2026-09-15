@@ -2,13 +2,15 @@ import { randomUUID } from 'node:crypto'
 import { Injectable } from '@nestjs/common'
 import { EventEmitter2 } from '@nestjs/event-emitter'
 import { InjectRepository } from '@nestjs/typeorm'
-import { IsNull, LessThanOrEqual, Repository } from 'typeorm'
+import { Repository } from 'typeorm'
 import type { EntityManager } from 'typeorm'
 import { err, ok } from '../fp/index.js'
 import { DomainError } from '../fp/index.js'
 import type { Result } from '../fp/index.js'
 import type { TransactionOptions } from './transaction.js'
 import { OutboxEventEntity } from './outbox_event.entity.js'
+import { currentEventMetadata, runWithRequestContext } from '@platform/context/index.js'
+import type { EventMetadata } from '@platform/context/index.js'
 
 export class OutboxPersistenceError extends DomainError {
   readonly code = 'OUTBOX_PERSISTENCE_ERROR'
@@ -40,15 +42,17 @@ export class OutboxService {
   ): Promise<Result<void, OutboxPersistenceError>> {
     const manager: EntityManager = options?.client ?? this.repository.manager
     try {
+      const eventId = randomUUID()
       await manager.save(
         manager.create(OutboxEventEntity, {
-          id: randomUUID(),
+          id: eventId,
           eventName,
-          payload: jsonSafe(payload),
+          payload: { ...jsonSafe(payload), eventId },
           availableAt: new Date(),
           publishedAt: null,
           attempts: 0,
           lastError: null,
+          deadLetteredAt: null,
         })
       )
       return ok(undefined)
@@ -87,22 +91,70 @@ export class OutboxDispatcher {
     if (this.running) return
     this.running = true
     try {
-      const events = await this.repository.find({
-        where: { publishedAt: IsNull(), availableAt: LessThanOrEqual(new Date()) },
-        order: { occurredAt: 'ASC' },
-        take: 50,
-      })
-      for (const event of events) {
-        try {
-          await this.emitter.emitAsync(event.eventName, event.payload)
-          event.publishedAt = new Date()
-          event.lastError = null
-        } catch (error) {
-          event.attempts += 1
-          event.availableAt = new Date(Date.now() + Math.min(60_000, 2 ** event.attempts * 1000))
-          event.lastError = error instanceof Error ? error.message.slice(0, 1000) : String(error)
-        }
-        await this.repository.save(event)
+      for (let dispatched = 0; dispatched < 50; dispatched += 1) {
+        const didDispatch = await this.repository.manager.transaction(async (manager) => {
+          const event = await manager
+            .createQueryBuilder(OutboxEventEntity, 'event')
+            .setLock('pessimistic_write')
+            .setOnLocked('skip_locked')
+            .where('event.published_at IS NULL')
+            .andWhere('event.dead_lettered_at IS NULL')
+            .andWhere('event.available_at <= :now', { now: new Date() })
+            .orderBy('event.occurred_at', 'ASC')
+            .getOne()
+
+          if (!event) return false
+
+          try {
+            const metadata = event.payload.eventMetadata
+            const hasMetadata =
+              metadata &&
+              typeof metadata === 'object' &&
+              typeof (metadata as Record<string, unknown>).actorId === 'string' &&
+              typeof (metadata as Record<string, unknown>).requestId === 'string'
+            const baseMetadata: EventMetadata = hasMetadata
+              ? {
+                  actorId: (metadata as Record<string, string>).actorId,
+                  requestId: (metadata as Record<string, string>).requestId,
+                }
+              : currentEventMetadata()
+            const eventMetadata: EventMetadata = { ...baseMetadata, eventId: event.id }
+            const payload = { ...event.payload, eventMetadata, eventId: event.id }
+            event.payload = payload
+
+            await runWithRequestContext(eventMetadata, () =>
+              this.emitter.emitAsync(event.eventName, payload)
+            )
+            event.publishedAt = new Date()
+            event.lastError = null
+          } catch (error) {
+            event.attempts += 1
+            const maxAttempts = Math.max(1, Number(process.env.OUTBOX_MAX_ATTEMPTS ?? 20))
+            if (event.attempts >= maxAttempts) {
+              event.deadLetteredAt = new Date()
+            } else {
+              event.availableAt = new Date(
+                Date.now() + Math.min(60_000, 2 ** event.attempts * 1000)
+              )
+            }
+            event.lastError = error instanceof Error ? error.message.slice(0, 1000) : String(error)
+            console.warn(
+              JSON.stringify({
+                level: 'warn',
+                component: 'outbox',
+                eventId: event.id,
+                eventName: event.eventName,
+                attempts: event.attempts,
+                deadLettered: Boolean(event.deadLetteredAt),
+                message: 'domain event dispatch failed',
+              })
+            )
+          }
+          await manager.save(event)
+          return true
+        })
+
+        if (!didDispatch) break
       }
     } finally {
       this.running = false

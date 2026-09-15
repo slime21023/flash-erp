@@ -1,8 +1,11 @@
 import 'reflect-metadata'
 import { NestFactory } from '@nestjs/core'
 import { ValidationPipe } from '@nestjs/common'
+import { json } from 'express'
+import type { NextFunction, Request, Response } from 'express'
 import { AppModule } from './app.module.js'
-import { AuthGuard, RbacGuard } from '@platform/security/index.js'
+import { AuthGuard, CsrfGuard, RbacGuard } from '@platform/security/index.js'
+import { ProductionExceptionFilter } from '@platform/http/index.js'
 
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger'
 
@@ -13,9 +16,23 @@ if (typeof (BigInt.prototype as any).toJSON !== 'function') {
 }
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule)
+  const app = await NestFactory.create(AppModule, { bodyParser: false })
 
-  app.useGlobalGuards(app.get(AuthGuard), app.get(RbacGuard))
+  app.use(json({ limit: '1mb' }))
+  app.use((_request: Request, response: Response, next: NextFunction) => {
+    response.setHeader('X-Content-Type-Options', 'nosniff')
+    response.setHeader('X-Frame-Options', 'DENY')
+    response.setHeader('Referrer-Policy', 'no-referrer')
+    response.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()')
+    if (process.env.NODE_ENV === 'production') {
+      response.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains')
+    }
+    next()
+  })
+  app.useGlobalFilters(new ProductionExceptionFilter())
+  app.enableShutdownHooks()
+
+  app.useGlobalGuards(app.get(AuthGuard), app.get(CsrfGuard), app.get(RbacGuard))
 
   app.enableCors({
     origin: (process.env.CORS_ORIGINS ?? 'http://localhost:5173,http://127.0.0.1:5173')

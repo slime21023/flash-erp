@@ -410,14 +410,16 @@ test('PBT: BomExplosionEngine requirement calculation strictly monotonic and acc
           },
         ]
 
-        const exploded = BomExplosionEngine.explode({
+        const exploded = BomExplosionEngine.tryExplode({
           targetQuantity: targetQty,
           baseQuantity: baseQty,
           lines,
         })
+        assert.equal(exploded.isOk, true)
+        if (exploded.isErr) return
 
-        assert.equal(exploded.length, 1)
-        const planned = exploded[0]!.plannedQuantity
+        assert.equal(exploded.value.length, 1)
+        const planned = exploded.value[0]!.plannedQuantity
 
         // Invariant 1: Planned quantity must be >= floor(targetQty * qtyPerBase / baseQty)
         const theoreticalMin = (targetQty * qtyPerBase) / baseQty
@@ -447,18 +449,23 @@ test('PBT: OverheadAllocationEngine strictly preserves total pool without remain
           weight: w,
         }))
 
-        const allocations = OverheadAllocationEngine.allocate({
+        const allocations = OverheadAllocationEngine.tryAllocate({
           totalPoolAmountMinorUnits: poolAmount,
           currency: 'TWD',
           targets,
         })
+        assert.equal(allocations.isOk, true)
+        if (allocations.isErr) return
 
         // Invariant 1: Sum of allocated amounts strictly equals totalPoolAmount
-        const sumAllocated = allocations.reduce((sum, a) => sum + a.allocatedAmountMinorUnits, 0n)
+        const sumAllocated = allocations.value.reduce(
+          (sum, a) => sum + a.allocatedAmountMinorUnits,
+          0n
+        )
         assert.equal(sumAllocated, poolAmount)
 
         // Invariant 2: Each allocation is non-negative
-        for (const a of allocations) {
+        for (const a of allocations.value) {
           assert.equal(a.allocatedAmountMinorUnits >= 0n, true)
         }
       }

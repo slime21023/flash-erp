@@ -51,13 +51,21 @@ test('finance service rejects duplicate journal entries with Result.err', async 
     assert.equal(entry.isOk, true)
     if (entry.isOk) {
       const service = new InMemoryFinanceService()
-      const postResult = await service.post(entry.value)
-      assert.equal(postResult.isOk, true)
-      const duplicate = await service.post(entry.value)
-      assert.equal(duplicate.isErr, true)
-      if (duplicate.isErr) {
-        assert.equal(duplicate.error.code, 'JOURNAL_ENTRY_ALREADY_POSTED')
+      const draftInput = {
+        id: entry.value.id,
+        companyId: 'company-001',
+        number: 'JE-001',
+        accountingDate: '2026-01-01',
+        lines: entry.value.lines,
       }
+      const draftResult = await service.createDraft(draftInput)
+      assert.equal(draftResult.isOk, true)
+      const postResult = await service.postDraft(entry.value.id)
+      assert.equal(postResult.isOk, true)
+      const duplicatePost = await service.postDraft(entry.value.id)
+      assert.equal(duplicatePost.isErr, true)
+      const duplicateDraft = await service.createDraft(draftInput)
+      assert.equal(duplicateDraft.isErr, true)
     }
   }
 })

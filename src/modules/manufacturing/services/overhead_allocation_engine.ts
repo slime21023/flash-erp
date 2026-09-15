@@ -49,13 +49,4 @@ export class OverheadAllocationEngine {
    * Allocates a pool of overhead cost across work orders based on their weights
    * (e.g. completed quantity or direct material cost) with zero remainder loss.
    */
-  static allocate(params: {
-    totalPoolAmountMinorUnits: bigint
-    currency?: string
-    targets: readonly AllocationTarget[]
-  }): TargetAllocationResult[] {
-    const result = OverheadAllocationEngine.tryAllocate(params)
-    if (result.isErr) throw new Error(result.error.message)
-    return result.value
-  }
 }

@@ -7,7 +7,7 @@ export const treasuryManifest: ModuleManifest = {
   summary: '銀行帳戶管理、收付款憑單、單據沖銷、銀行對帳單導入、規則對帳與調節表',
   category: 'Financials',
   author: 'FlashERP Core Team',
-  dependsOn: ['finance'],
+  dependsOn: ['finance', 'sales'],
   installable: true,
   autoInstall: true,
   icon: 'Landmark',

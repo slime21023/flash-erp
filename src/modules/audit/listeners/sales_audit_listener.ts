@@ -19,6 +19,8 @@ export class SalesAuditListener {
       action: 'SALES_ORDER_CONFIRMED',
       entityType: 'SALES_ORDER',
       entityId: event.salesOrderId,
+      actorId: event.eventMetadata.actorId,
+      requestId: event.eventMetadata.requestId,
       afterValue: {
         companyId: event.companyId,
         customerId: event.customerId,
@@ -34,6 +36,8 @@ export class SalesAuditListener {
       action: 'SALES_ORDER_SHIPPED',
       entityType: 'SHIPMENT',
       entityId: event.shipmentId,
+      actorId: event.eventMetadata.actorId,
+      requestId: event.eventMetadata.requestId,
       afterValue: {
         salesOrderId: event.salesOrderId,
         companyId: event.companyId,

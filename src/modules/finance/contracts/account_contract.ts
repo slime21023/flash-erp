@@ -1,5 +1,6 @@
 import type { Result } from '@platform/fp/index.js'
 import type { TransactionOptions } from '@platform/persistence/index.js'
+import type { ScopeForbiddenError } from '@platform/security/index.js'
 import type {
   AccountAlreadyExistsError,
   AccountNotFoundError,
@@ -32,13 +33,20 @@ export abstract class AccountContract {
   abstract create(
     input: CreateAccountInput,
     options?: TransactionOptions
-  ): Promise<Result<AccountSnapshot, InvalidAccountError | AccountAlreadyExistsError>>
+  ): Promise<
+    Result<AccountSnapshot, InvalidAccountError | AccountAlreadyExistsError | ScopeForbiddenError>
+  >
   abstract find(
     id: string,
     options?: TransactionOptions
-  ): Promise<Result<AccountSnapshot, AccountNotFoundError>>
+  ): Promise<Result<AccountSnapshot, AccountNotFoundError | ScopeForbiddenError>>
   abstract ensureActive(
     ids: readonly string[],
     options?: TransactionOptions
-  ): Promise<Result<readonly AccountSnapshot[], AccountNotFoundError | InactiveAccountError>>
+  ): Promise<
+    Result<
+      readonly AccountSnapshot[],
+      AccountNotFoundError | InactiveAccountError | ScopeForbiddenError
+    >
+  >
 }

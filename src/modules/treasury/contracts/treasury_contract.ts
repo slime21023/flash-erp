@@ -1,5 +1,6 @@
 import type { Result } from '@platform/fp/index.js'
 import type { TransactionOptions } from '@platform/persistence/index.js'
+import type { ScopeForbiddenError } from '@platform/security/index.js'
 import type {
   BankAccountAlreadyExistsError,
   BankAccountNotFoundError,
@@ -186,22 +187,26 @@ export abstract class TreasuryContract {
   abstract registerBankAccount(
     input: RegisterBankAccountInput,
     options?: TransactionOptions
-  ): Promise<Result<BankAccountSnapshot, TreasuryError | BankAccountAlreadyExistsError>>
+  ): Promise<
+    Result<BankAccountSnapshot, TreasuryError | BankAccountAlreadyExistsError | ScopeForbiddenError>
+  >
 
   abstract getBankAccount(
     id: string,
     options?: TransactionOptions
-  ): Promise<Result<BankAccountSnapshot, BankAccountNotFoundError>>
+  ): Promise<Result<BankAccountSnapshot, BankAccountNotFoundError | ScopeForbiddenError>>
 
   abstract listBankAccounts(
     companyId: string,
     options?: TransactionOptions
-  ): Promise<Result<readonly BankAccountSnapshot[], TreasuryError>>
+  ): Promise<Result<readonly BankAccountSnapshot[], TreasuryError | ScopeForbiddenError>>
 
   abstract createPayment(
     input: CreatePaymentInput,
     options?: TransactionOptions
-  ): Promise<Result<PaymentVoucherSnapshot, TreasuryError | BankAccountNotFoundError>>
+  ): Promise<
+    Result<PaymentVoucherSnapshot, TreasuryError | BankAccountNotFoundError | ScopeForbiddenError>
+  >
 
   abstract postPayment(
     id: string,
@@ -214,18 +219,21 @@ export abstract class TreasuryContract {
       | InvalidPaymentStateError
       | InsufficientFundsError
       | BankAccountNotFoundError
+      | ScopeForbiddenError
     >
   >
 
   abstract getPayment(
     id: string,
     options?: TransactionOptions
-  ): Promise<Result<PaymentVoucherSnapshot, PaymentNotFoundError>>
+  ): Promise<Result<PaymentVoucherSnapshot, PaymentNotFoundError | ScopeForbiddenError>>
 
   abstract createReceipt(
     input: CreateReceiptInput,
     options?: TransactionOptions
-  ): Promise<Result<ReceiptVoucherSnapshot, TreasuryError | BankAccountNotFoundError>>
+  ): Promise<
+    Result<ReceiptVoucherSnapshot, TreasuryError | BankAccountNotFoundError | ScopeForbiddenError>
+  >
 
   abstract postReceipt(
     id: string,
@@ -233,19 +241,25 @@ export abstract class TreasuryContract {
   ): Promise<
     Result<
       ReceiptVoucherSnapshot,
-      TreasuryError | ReceiptNotFoundError | InvalidReceiptStateError | BankAccountNotFoundError
+      | TreasuryError
+      | ReceiptNotFoundError
+      | InvalidReceiptStateError
+      | BankAccountNotFoundError
+      | ScopeForbiddenError
     >
   >
 
   abstract getReceipt(
     id: string,
     options?: TransactionOptions
-  ): Promise<Result<ReceiptVoucherSnapshot, ReceiptNotFoundError>>
+  ): Promise<Result<ReceiptVoucherSnapshot, ReceiptNotFoundError | ScopeForbiddenError>>
 
   abstract importBankStatement(
     input: ImportBankStatementInput,
     options?: TransactionOptions
-  ): Promise<Result<BankStatementSnapshot, TreasuryError | BankAccountNotFoundError>>
+  ): Promise<
+    Result<BankStatementSnapshot, TreasuryError | BankAccountNotFoundError | ScopeForbiddenError>
+  >
 
   abstract reconcileBankStatement(
     statementId: string,
@@ -253,7 +267,7 @@ export abstract class TreasuryContract {
   ): Promise<
     Result<
       BankReconciliationResult,
-      TreasuryError | BankStatementNotFoundError | BankAccountNotFoundError
+      TreasuryError | BankStatementNotFoundError | BankAccountNotFoundError | ScopeForbiddenError
     >
   >
 }

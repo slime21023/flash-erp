@@ -1,3 +1,6 @@
+import { currentEventMetadata } from '@platform/context/index.js'
+import type { EventMetadata } from '@platform/context/index.js'
+
 export class GoodsReceivedEvent {
   static readonly EVENT_NAME = 'procurement.goods_received'
 
@@ -6,7 +9,8 @@ export class GoodsReceivedEvent {
     public readonly purchaseOrderId: string,
     public readonly companyId: string,
     public readonly warehouseId: string,
-    public readonly receivedAt: Date
+    public readonly receivedAt: Date,
+    public readonly eventMetadata: EventMetadata = currentEventMetadata()
   ) {}
 }
 
@@ -17,7 +21,8 @@ export class PurchaseOrderApprovedEvent {
     public readonly purchaseOrderId: string,
     public readonly companyId: string,
     public readonly supplierId: string,
-    public readonly approvedAt: Date
+    public readonly approvedAt: Date,
+    public readonly eventMetadata: EventMetadata = currentEventMetadata()
   ) {}
 }
 
@@ -28,7 +33,8 @@ export class PurchaseRequisitionApprovedEvent {
     public readonly requisitionId: string,
     public readonly companyId: string,
     public readonly requesterId: string,
-    public readonly approvedAt: Date
+    public readonly approvedAt: Date,
+    public readonly eventMetadata: EventMetadata = currentEventMetadata()
   ) {}
 }
 
@@ -39,7 +45,8 @@ export class VendorInvoiceMatchedEvent {
     public readonly invoiceId: string,
     public readonly companyId: string,
     public readonly purchaseOrderId: string,
-    public readonly matchedAt: Date
+    public readonly matchedAt: Date,
+    public readonly eventMetadata: EventMetadata = currentEventMetadata()
   ) {}
 }
 
@@ -51,6 +58,7 @@ export class AccountsPayableVoucherCreatedEvent {
     public readonly journalEntryId: string,
     public readonly companyId: string,
     public readonly totalAmountMinorUnits: bigint,
-    public readonly createdAt: Date
+    public readonly createdAt: Date,
+    public readonly eventMetadata: EventMetadata = currentEventMetadata()
   ) {}
 }

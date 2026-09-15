@@ -16,6 +16,7 @@ export class AccountsController {
     return ResultPresenter.handle(res, result, { successStatus: 201 })
   }
 
+  @RequirePermission('finance.account.read')
   @Get(':id')
   async show(@Param('id') id: string, @Res() res: Response) {
     const result = await this.account.find(id)

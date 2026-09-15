@@ -11,6 +11,7 @@ export type AuthenticatedPrincipal = Readonly<{
   displayName: string
   isActive: boolean
   roles: readonly string[]
+  organizationUnitIds: readonly string[]
 }>
 
 export type AuthSession = Readonly<{

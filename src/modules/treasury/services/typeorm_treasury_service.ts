@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common'
 import { InjectRepository } from '@nestjs/typeorm'
+import { createHash } from 'node:crypto'
 import { Repository } from 'typeorm'
 import { err, ok } from '@platform/fp/index.js'
 import type { Result } from '@platform/fp/index.js'
@@ -9,7 +10,10 @@ import {
   runInTransaction,
 } from '@platform/persistence/index.js'
 import { Money } from '@platform/kernel/index.js'
+import { scopeMismatch } from '@platform/context/index.js'
+import { ScopeForbiddenError } from '@platform/security/index.js'
 import { FinanceContract, type JournalLine } from '@modules/finance/contracts/index.js'
+import { SalesContract } from '@modules/sales/contracts/index.js'
 import {
   BankAccountAlreadyExistsError,
   BankAccountNotFoundError,
@@ -43,6 +47,16 @@ import { BankStatementEntity } from '../entities/bank_statement.entity.js'
 import { BankStatementLineEntity } from '../entities/bank_statement_line.entity.js'
 import { BankReconciliationMatcher } from './bank_reconciliation_matcher.js'
 
+function stableReference(prefix: string, ...parts: string[]): string {
+  const digest = createHash('sha256').update(parts.join('\0')).digest('hex')
+  return `${prefix}-${digest.slice(0, 48)}`
+}
+
+function boundedReference(prefix: string, value: string): string {
+  const plain = `${prefix}-${value}`
+  return plain.length <= 64 ? plain : stableReference(prefix, value)
+}
+
 @Injectable()
 export class TypeOrmTreasuryService extends TreasuryContract {
   constructor(
@@ -61,6 +75,7 @@ export class TypeOrmTreasuryService extends TreasuryContract {
     @InjectRepository(BankStatementLineEntity)
     private readonly statementLineRepo: Repository<BankStatementLineEntity>,
     private readonly finance: FinanceContract,
+    private readonly sales: SalesContract,
     private readonly outbox: OutboxService
   ) {
     super()
@@ -69,7 +84,9 @@ export class TypeOrmTreasuryService extends TreasuryContract {
   async registerBankAccount(
     input: RegisterBankAccountInput,
     options?: TransactionOptions
-  ): Promise<Result<BankAccountSnapshot, TreasuryError | BankAccountAlreadyExistsError>> {
+  ): Promise<
+    Result<BankAccountSnapshot, TreasuryError | BankAccountAlreadyExistsError | ScopeForbiddenError>
+  > {
     const id = input.id.trim()
     const companyId = input.companyId.trim()
     const accountNumber = input.accountNumber.trim()
@@ -77,6 +94,7 @@ export class TypeOrmTreasuryService extends TreasuryContract {
     const bankName = input.bankName.trim()
     const accountName = input.accountName.trim()
     const glAccountId = input.glAccountId.trim()
+    const currency = (input.currency || 'TWD').trim().toUpperCase()
 
     if (
       !id ||
@@ -85,10 +103,18 @@ export class TypeOrmTreasuryService extends TreasuryContract {
       !bankCode ||
       !bankName ||
       !accountName ||
-      !glAccountId
+      !glAccountId ||
+      !/^[A-Z]{3}$/.test(currency)
     ) {
       return err(new TreasuryError('All bank account fields are required'))
     }
+
+    if ((input.initialBalanceMinorUnits ?? 0n) < 0n) {
+      return err(new TreasuryError('Initial bank balance cannot be negative'))
+    }
+
+    const selectedScope = scopeMismatch(companyId, options)
+    if (selectedScope) return err(new ScopeForbiddenError(selectedScope, 'bank account'))
 
     const manager = options?.client ?? this.bankAccountRepo.manager
     const existing = await manager.findOne(BankAccountEntity, {
@@ -106,7 +132,7 @@ export class TypeOrmTreasuryService extends TreasuryContract {
         bankCode,
         bankName,
         accountName,
-        currency: input.currency || 'TWD',
+        currency,
         glAccountId,
         currentBalanceMinorUnits: (input.initialBalanceMinorUnits ?? 0n).toString(),
         isActive: true,
@@ -133,12 +159,14 @@ export class TypeOrmTreasuryService extends TreasuryContract {
   async getBankAccount(
     id: string,
     options?: TransactionOptions
-  ): Promise<Result<BankAccountSnapshot, BankAccountNotFoundError>> {
+  ): Promise<Result<BankAccountSnapshot, BankAccountNotFoundError | ScopeForbiddenError>> {
     const manager = options?.client ?? this.bankAccountRepo.manager
     const entity = await manager.findOne(BankAccountEntity, { where: { id } })
     if (!entity) {
       return err(new BankAccountNotFoundError(id))
     }
+    const selectedScope = scopeMismatch(entity.companyId, options)
+    if (selectedScope) return err(new ScopeForbiddenError(selectedScope, 'bank account'))
     return ok({
       id: entity.id,
       companyId: entity.companyId,
@@ -156,7 +184,10 @@ export class TypeOrmTreasuryService extends TreasuryContract {
   async listBankAccounts(
     companyId: string,
     options?: TransactionOptions
-  ): Promise<Result<readonly BankAccountSnapshot[], TreasuryError>> {
+  ): Promise<Result<readonly BankAccountSnapshot[], TreasuryError | ScopeForbiddenError>> {
+    const selectedScope = scopeMismatch(companyId, options)
+    if (selectedScope) return err(new ScopeForbiddenError(selectedScope, 'bank accounts'))
+
     const manager = options?.client ?? this.bankAccountRepo.manager
     const accounts = await manager.find(BankAccountEntity, { where: { companyId } })
     return ok(
@@ -178,88 +209,114 @@ export class TypeOrmTreasuryService extends TreasuryContract {
   async createPayment(
     input: CreatePaymentInput,
     options?: TransactionOptions
-  ): Promise<Result<PaymentVoucherSnapshot, TreasuryError | BankAccountNotFoundError>> {
-    return runInTransaction<PaymentVoucherSnapshot, TreasuryError | BankAccountNotFoundError>(
-      this.paymentRepo.manager,
-      options,
-      async (client) => {
-        const id = input.id.trim()
-        const companyId = input.companyId.trim()
-        const bankAccountId = input.bankAccountId.trim()
-        const paymentNumber = input.paymentNumber.trim()
-        const paymentDate = input.paymentDate.trim()
-        const beneficiaryId = input.beneficiaryId.trim()
+  ): Promise<
+    Result<PaymentVoucherSnapshot, TreasuryError | BankAccountNotFoundError | ScopeForbiddenError>
+  > {
+    return runInTransaction<
+      PaymentVoucherSnapshot,
+      TreasuryError | BankAccountNotFoundError | ScopeForbiddenError
+    >(this.paymentRepo.manager, options, async (client) => {
+      const id = input.id.trim()
+      const companyId = input.companyId.trim()
+      const bankAccountId = input.bankAccountId.trim()
+      const paymentNumber = input.paymentNumber.trim()
+      const paymentDate = input.paymentDate.trim()
+      const beneficiaryId = input.beneficiaryId.trim()
 
-        if (
-          !id ||
-          !companyId ||
-          !bankAccountId ||
-          !paymentNumber ||
-          !paymentDate ||
-          !beneficiaryId
-        ) {
-          return err(new TreasuryError('Payment fields are required'))
-        }
-
-        if (input.amountMinorUnits <= 0n) {
-          return err(new TreasuryError('Payment amount must be greater than zero'))
-        }
-
-        const bankAccount = await client.findOne(BankAccountEntity, {
-          where: { id: bankAccountId },
-        })
-        if (!bankAccount) {
-          return err(new BankAccountNotFoundError(bankAccountId))
-        }
-
-        try {
-          const entity = client.create(PaymentVoucherEntity, {
-            id,
-            companyId,
-            bankAccountId,
-            paymentNumber,
-            paymentDate,
-            beneficiaryType: input.beneficiaryType,
-            beneficiaryId,
-            currency: input.currency || bankAccount.currency,
-            amountMinorUnits: input.amountMinorUnits.toString(),
-            status: 'DRAFT',
-            memo: input.memo,
-            lines: (input.lines ?? []).map((l, index) =>
-              client.create(PaymentVoucherLineEntity, {
-                id: `${id}-line-${index}`,
-                paymentVoucherId: id,
-                invoiceId: l.invoiceId,
-                appliedAmountMinorUnits: l.appliedAmountMinorUnits.toString(),
-                memo: l.memo,
-              })
-            ),
-          })
-          await client.save(entity)
-
-          return ok({
-            id: entity.id,
-            companyId: entity.companyId,
-            bankAccountId: entity.bankAccountId,
-            paymentNumber: entity.paymentNumber,
-            paymentDate: entity.paymentDate,
-            beneficiaryType: entity.beneficiaryType,
-            beneficiaryId: entity.beneficiaryId,
-            currency: entity.currency,
-            amountMinorUnits: BigInt(entity.amountMinorUnits),
-            status: entity.status,
-            memo: entity.memo,
-            lines: entity.lines.map((l) => ({
-              invoiceId: l.invoiceId,
-              appliedAmountMinorUnits: BigInt(l.appliedAmountMinorUnits),
-              memo: l.memo,
-            })),
-          })
-        } catch {
-          return err(new TreasuryError(`Unable to create payment voucher: ${id}`))
-        }
+      if (!id || !companyId || !bankAccountId || !paymentNumber || !paymentDate || !beneficiaryId) {
+        return err(new TreasuryError('Payment fields are required'))
       }
-    )
+
+      const selectedScope = scopeMismatch(companyId, options)
+      if (selectedScope) return err(new ScopeForbiddenError(selectedScope, 'payment'))
+
+      if (input.amountMinorUnits <= 0n) {
+        return err(new TreasuryError('Payment amount must be greater than zero'))
+      }
+
+      const lines = (input.lines ?? []).map((line) => ({
+        invoiceId: line.invoiceId.trim(),
+        appliedAmountMinorUnits: line.appliedAmountMinorUnits,
+        memo: line.memo,
+      }))
+      const lineIds = new Set(lines.map((line) => line.invoiceId))
+      if (
+        lines.some((line) => !line.invoiceId || line.appliedAmountMinorUnits <= 0n) ||
+        lineIds.size !== lines.length ||
+        (lines.length > 0 &&
+          lines.reduce((sum, line) => sum + line.appliedAmountMinorUnits, 0n) !==
+            input.amountMinorUnits)
+      ) {
+        return err(
+          new TreasuryError('Payment lines must be unique, positive, and equal payment amount')
+        )
+      }
+      const bankAccount = await client.findOne(BankAccountEntity, {
+        where: { id: bankAccountId },
+      })
+      if (!bankAccount) {
+        return err(new BankAccountNotFoundError(bankAccountId))
+      }
+
+      if (
+        bankAccount.companyId !== companyId ||
+        !bankAccount.isActive ||
+        (input.currency || bankAccount.currency).trim().toUpperCase() !== bankAccount.currency
+      ) {
+        return err(
+          new TreasuryError('Bank account must be active, in the same company, and currency')
+        )
+      }
+
+      const currency = (input.currency || bankAccount.currency).trim().toUpperCase()
+
+      try {
+        const entity = client.create(PaymentVoucherEntity, {
+          id,
+          companyId,
+          bankAccountId,
+          paymentNumber,
+          paymentDate,
+          beneficiaryType: input.beneficiaryType,
+          beneficiaryId,
+          currency,
+          amountMinorUnits: input.amountMinorUnits.toString(),
+          status: 'DRAFT',
+          memo: input.memo,
+          lines: lines.map((l, index) =>
+            client.create(PaymentVoucherLineEntity, {
+              id: stableReference('pmt-line', id, index.toString()),
+              paymentVoucherId: id,
+              invoiceId: l.invoiceId,
+              appliedAmountMinorUnits: l.appliedAmountMinorUnits.toString(),
+              memo: l.memo,
+            })
+          ),
+        })
+        await client.save(entity)
+
+        return ok({
+          id: entity.id,
+          companyId: entity.companyId,
+          bankAccountId: entity.bankAccountId,
+          paymentNumber: entity.paymentNumber,
+          paymentDate: entity.paymentDate,
+          beneficiaryType: entity.beneficiaryType,
+          beneficiaryId: entity.beneficiaryId,
+          currency: entity.currency,
+          amountMinorUnits: BigInt(entity.amountMinorUnits),
+          status: entity.status,
+          memo: entity.memo,
+          lines: entity.lines.map((l) => ({
+            invoiceId: l.invoiceId,
+            appliedAmountMinorUnits: BigInt(l.appliedAmountMinorUnits),
+            memo: l.memo,
+          })),
+        })
+      } catch {
+        return err(new TreasuryError(`Unable to create payment voucher: ${id}`))
+      }
+    })
   }
 
   async postPayment(
@@ -273,6 +330,7 @@ export class TypeOrmTreasuryService extends TreasuryContract {
       | InvalidPaymentStateError
       | InsufficientFundsError
       | BankAccountNotFoundError
+      | ScopeForbiddenError
     >
   > {
     return runInTransaction<
@@ -282,24 +340,40 @@ export class TypeOrmTreasuryService extends TreasuryContract {
       | InvalidPaymentStateError
       | InsufficientFundsError
       | BankAccountNotFoundError
+      | ScopeForbiddenError
     >(this.paymentRepo.manager, options, async (client) => {
-      const payment = await client.findOne(PaymentVoucherEntity, {
-        where: { id },
-        relations: ['lines'],
-      })
+      const payment = await client
+        .createQueryBuilder(PaymentVoucherEntity, 'p')
+        .leftJoinAndSelect('p.lines', 'lines')
+        .setLock('pessimistic_write')
+        .where('p.id = :id', { id })
+        .getOne()
       if (!payment) {
         return err(new PaymentNotFoundError(id))
       }
+
+      const selectedScope = scopeMismatch(payment.companyId, options)
+      if (selectedScope) return err(new ScopeForbiddenError(selectedScope, 'payment'))
 
       if (payment.status !== 'DRAFT') {
         return err(new InvalidPaymentStateError(payment.status, 'post'))
       }
 
-      const bankAccount = await client.findOne(BankAccountEntity, {
-        where: { id: payment.bankAccountId },
-      })
+      const bankAccount = await client
+        .createQueryBuilder(BankAccountEntity, 'b')
+        .setLock('pessimistic_write')
+        .where('b.id = :id', { id: payment.bankAccountId })
+        .getOne()
       if (!bankAccount) {
         return err(new BankAccountNotFoundError(payment.bankAccountId))
+      }
+
+      if (
+        bankAccount.companyId !== payment.companyId ||
+        !bankAccount.isActive ||
+        bankAccount.currency !== payment.currency
+      ) {
+        return err(new TreasuryError('Payment bank account company or currency mismatch'))
       }
 
       const currentBalance = BigInt(bankAccount.currentBalanceMinorUnits)
@@ -316,7 +390,7 @@ export class TypeOrmTreasuryService extends TreasuryContract {
       // 2. Finance Double-Entry
       let journalEntryId: string | undefined
       {
-        journalEntryId = `je-pmt-${payment.id}`
+        journalEntryId = boundedReference('je-pmt', payment.id)
         const zeroRes = Money.zero(payment.currency)
         const amtRes = Money.fromMinorUnits(paymentAmount, payment.currency)
         if (zeroRes.isOk && amtRes.isOk) {
@@ -338,7 +412,7 @@ export class TypeOrmTreasuryService extends TreasuryContract {
             {
               id: journalEntryId,
               companyId: payment.companyId,
-              number: `JE-PMT-${payment.paymentNumber}`,
+              number: boundedReference('JE-PMT', payment.paymentNumber),
               accountingDate: payment.paymentDate,
               memo: payment.memo || `Payment Voucher ${payment.paymentNumber}`,
               lines,
@@ -347,6 +421,11 @@ export class TypeOrmTreasuryService extends TreasuryContract {
           )
           if (draftRes.isErr) {
             return err(new TreasuryError(`Finance createDraft failed: ${draftRes.error.message}`))
+          }
+
+          const postRes = await this.finance.postDraft(journalEntryId, undefined, { client })
+          if (postRes.isErr) {
+            return err(new TreasuryError(`Finance posting failed: ${postRes.error.message}`))
           }
         }
       }
@@ -397,7 +476,7 @@ export class TypeOrmTreasuryService extends TreasuryContract {
   async getPayment(
     id: string,
     options?: TransactionOptions
-  ): Promise<Result<PaymentVoucherSnapshot, PaymentNotFoundError>> {
+  ): Promise<Result<PaymentVoucherSnapshot, PaymentNotFoundError | ScopeForbiddenError>> {
     const manager = options?.client ?? this.paymentRepo.manager
     const entity = await manager.findOne(PaymentVoucherEntity, {
       where: { id },
@@ -406,6 +485,8 @@ export class TypeOrmTreasuryService extends TreasuryContract {
     if (!entity) {
       return err(new PaymentNotFoundError(id))
     }
+    const selectedScope = scopeMismatch(entity.companyId, options)
+    if (selectedScope) return err(new ScopeForbiddenError(selectedScope, 'payment'))
     return ok({
       id: entity.id,
       companyId: entity.companyId,
@@ -431,81 +512,114 @@ export class TypeOrmTreasuryService extends TreasuryContract {
   async createReceipt(
     input: CreateReceiptInput,
     options?: TransactionOptions
-  ): Promise<Result<ReceiptVoucherSnapshot, TreasuryError | BankAccountNotFoundError>> {
-    return runInTransaction<ReceiptVoucherSnapshot, TreasuryError | BankAccountNotFoundError>(
-      this.receiptRepo.manager,
-      options,
-      async (client) => {
-        const id = input.id.trim()
-        const companyId = input.companyId.trim()
-        const bankAccountId = input.bankAccountId.trim()
-        const receiptNumber = input.receiptNumber.trim()
-        const receiptDate = input.receiptDate.trim()
-        const payerId = input.payerId.trim()
+  ): Promise<
+    Result<ReceiptVoucherSnapshot, TreasuryError | BankAccountNotFoundError | ScopeForbiddenError>
+  > {
+    return runInTransaction<
+      ReceiptVoucherSnapshot,
+      TreasuryError | BankAccountNotFoundError | ScopeForbiddenError
+    >(this.receiptRepo.manager, options, async (client) => {
+      const id = input.id.trim()
+      const companyId = input.companyId.trim()
+      const bankAccountId = input.bankAccountId.trim()
+      const receiptNumber = input.receiptNumber.trim()
+      const receiptDate = input.receiptDate.trim()
+      const payerId = input.payerId.trim()
 
-        if (!id || !companyId || !bankAccountId || !receiptNumber || !receiptDate || !payerId) {
-          return err(new TreasuryError('Receipt fields are required'))
-        }
-
-        if (input.amountMinorUnits <= 0n) {
-          return err(new TreasuryError('Receipt amount must be greater than zero'))
-        }
-
-        const bankAccount = await client.findOne(BankAccountEntity, {
-          where: { id: bankAccountId },
-        })
-        if (!bankAccount) {
-          return err(new BankAccountNotFoundError(bankAccountId))
-        }
-
-        try {
-          const entity = client.create(ReceiptVoucherEntity, {
-            id,
-            companyId,
-            bankAccountId,
-            receiptNumber,
-            receiptDate,
-            payerType: input.payerType,
-            payerId,
-            currency: input.currency || bankAccount.currency,
-            amountMinorUnits: input.amountMinorUnits.toString(),
-            status: 'DRAFT',
-            memo: input.memo,
-            lines: (input.lines ?? []).map((l, index) =>
-              client.create(ReceiptVoucherLineEntity, {
-                id: `${id}-line-${index}`,
-                receiptVoucherId: id,
-                referenceId: l.referenceId,
-                appliedAmountMinorUnits: l.appliedAmountMinorUnits.toString(),
-                memo: l.memo,
-              })
-            ),
-          })
-          await client.save(entity)
-
-          return ok({
-            id: entity.id,
-            companyId: entity.companyId,
-            bankAccountId: entity.bankAccountId,
-            receiptNumber: entity.receiptNumber,
-            receiptDate: entity.receiptDate,
-            payerType: entity.payerType,
-            payerId: entity.payerId,
-            currency: entity.currency,
-            amountMinorUnits: BigInt(entity.amountMinorUnits),
-            status: entity.status,
-            memo: entity.memo,
-            lines: entity.lines.map((l) => ({
-              referenceId: l.referenceId,
-              appliedAmountMinorUnits: BigInt(l.appliedAmountMinorUnits),
-              memo: l.memo,
-            })),
-          })
-        } catch {
-          return err(new TreasuryError(`Unable to create receipt voucher: ${id}`))
-        }
+      if (!id || !companyId || !bankAccountId || !receiptNumber || !receiptDate || !payerId) {
+        return err(new TreasuryError('Receipt fields are required'))
       }
-    )
+
+      const selectedScope = scopeMismatch(companyId, options)
+      if (selectedScope) return err(new ScopeForbiddenError(selectedScope, 'receipt'))
+
+      if (input.amountMinorUnits <= 0n) {
+        return err(new TreasuryError('Receipt amount must be greater than zero'))
+      }
+
+      const lines = (input.lines ?? []).map((line) => ({
+        referenceId: line.referenceId.trim(),
+        appliedAmountMinorUnits: line.appliedAmountMinorUnits,
+        memo: line.memo,
+      }))
+      const lineIds = new Set(lines.map((line) => line.referenceId))
+      if (
+        lines.some((line) => !line.referenceId || line.appliedAmountMinorUnits <= 0n) ||
+        lineIds.size !== lines.length ||
+        (lines.length > 0 &&
+          lines.reduce((sum, line) => sum + line.appliedAmountMinorUnits, 0n) !==
+            input.amountMinorUnits)
+      ) {
+        return err(
+          new TreasuryError('Receipt lines must be unique, positive, and equal receipt amount')
+        )
+      }
+      const bankAccount = await client.findOne(BankAccountEntity, {
+        where: { id: bankAccountId },
+      })
+      if (!bankAccount) {
+        return err(new BankAccountNotFoundError(bankAccountId))
+      }
+
+      if (
+        bankAccount.companyId !== companyId ||
+        !bankAccount.isActive ||
+        (input.currency || bankAccount.currency).trim().toUpperCase() !== bankAccount.currency
+      ) {
+        return err(
+          new TreasuryError('Bank account must be active, in the same company, and currency')
+        )
+      }
+
+      const currency = (input.currency || bankAccount.currency).trim().toUpperCase()
+
+      try {
+        const entity = client.create(ReceiptVoucherEntity, {
+          id,
+          companyId,
+          bankAccountId,
+          receiptNumber,
+          receiptDate,
+          payerType: input.payerType,
+          payerId,
+          currency,
+          amountMinorUnits: input.amountMinorUnits.toString(),
+          status: 'DRAFT',
+          memo: input.memo,
+          lines: lines.map((l, index) =>
+            client.create(ReceiptVoucherLineEntity, {
+              id: stableReference('rcpt-line', id, index.toString()),
+              receiptVoucherId: id,
+              referenceId: l.referenceId,
+              appliedAmountMinorUnits: l.appliedAmountMinorUnits.toString(),
+              memo: l.memo,
+            })
+          ),
+        })
+        await client.save(entity)
+
+        return ok({
+          id: entity.id,
+          companyId: entity.companyId,
+          bankAccountId: entity.bankAccountId,
+          receiptNumber: entity.receiptNumber,
+          receiptDate: entity.receiptDate,
+          payerType: entity.payerType,
+          payerId: entity.payerId,
+          currency: entity.currency,
+          amountMinorUnits: BigInt(entity.amountMinorUnits),
+          status: entity.status,
+          memo: entity.memo,
+          lines: entity.lines.map((l) => ({
+            referenceId: l.referenceId,
+            appliedAmountMinorUnits: BigInt(l.appliedAmountMinorUnits),
+            memo: l.memo,
+          })),
+        })
+      } catch {
+        return err(new TreasuryError(`Unable to create receipt voucher: ${id}`))
+      }
+    })
   }
 
   async postReceipt(
@@ -514,30 +628,53 @@ export class TypeOrmTreasuryService extends TreasuryContract {
   ): Promise<
     Result<
       ReceiptVoucherSnapshot,
-      TreasuryError | ReceiptNotFoundError | InvalidReceiptStateError | BankAccountNotFoundError
+      | TreasuryError
+      | ReceiptNotFoundError
+      | InvalidReceiptStateError
+      | BankAccountNotFoundError
+      | ScopeForbiddenError
     >
   > {
     return runInTransaction<
       ReceiptVoucherSnapshot,
-      TreasuryError | ReceiptNotFoundError | InvalidReceiptStateError | BankAccountNotFoundError
+      | TreasuryError
+      | ReceiptNotFoundError
+      | InvalidReceiptStateError
+      | BankAccountNotFoundError
+      | ScopeForbiddenError
     >(this.receiptRepo.manager, options, async (client) => {
-      const receipt = await client.findOne(ReceiptVoucherEntity, {
-        where: { id },
-        relations: ['lines'],
-      })
+      const receipt = await client
+        .createQueryBuilder(ReceiptVoucherEntity, 'r')
+        .leftJoinAndSelect('r.lines', 'lines')
+        .setLock('pessimistic_write')
+        .where('r.id = :id', { id })
+        .getOne()
       if (!receipt) {
         return err(new ReceiptNotFoundError(id))
       }
+
+      const selectedScope = scopeMismatch(receipt.companyId, options)
+      if (selectedScope) return err(new ScopeForbiddenError(selectedScope, 'receipt'))
 
       if (receipt.status !== 'DRAFT') {
         return err(new InvalidReceiptStateError(receipt.status, 'post'))
       }
 
-      const bankAccount = await client.findOne(BankAccountEntity, {
-        where: { id: receipt.bankAccountId },
-      })
+      const bankAccount = await client
+        .createQueryBuilder(BankAccountEntity, 'b')
+        .setLock('pessimistic_write')
+        .where('b.id = :id', { id: receipt.bankAccountId })
+        .getOne()
       if (!bankAccount) {
         return err(new BankAccountNotFoundError(receipt.bankAccountId))
+      }
+
+      if (
+        bankAccount.companyId !== receipt.companyId ||
+        !bankAccount.isActive ||
+        bankAccount.currency !== receipt.currency
+      ) {
+        return err(new TreasuryError('Receipt bank account company or currency mismatch'))
       }
 
       const currentBalance = BigInt(bankAccount.currentBalanceMinorUnits)
@@ -550,7 +687,7 @@ export class TypeOrmTreasuryService extends TreasuryContract {
       // 2. Finance Double-Entry
       let journalEntryId: string | undefined
       {
-        journalEntryId = `je-rcpt-${receipt.id}`
+        journalEntryId = boundedReference('je-rcpt', receipt.id)
         const zeroRes = Money.zero(receipt.currency)
         const amtRes = Money.fromMinorUnits(receiptAmount, receipt.currency)
         if (zeroRes.isOk && amtRes.isOk) {
@@ -572,7 +709,7 @@ export class TypeOrmTreasuryService extends TreasuryContract {
             {
               id: journalEntryId,
               companyId: receipt.companyId,
-              number: `JE-RCPT-${receipt.receiptNumber}`,
+              number: boundedReference('JE-RCPT', receipt.receiptNumber),
               accountingDate: receipt.receiptDate,
               memo: receipt.memo || `Receipt Voucher ${receipt.receiptNumber}`,
               lines,
@@ -582,7 +719,26 @@ export class TypeOrmTreasuryService extends TreasuryContract {
           if (draftRes.isErr) {
             return err(new TreasuryError(`Finance createDraft failed: ${draftRes.error.message}`))
           }
+
+          const postRes = await this.finance.postDraft(journalEntryId, undefined, { client })
+          if (postRes.isErr) {
+            return err(new TreasuryError(`Finance posting failed: ${postRes.error.message}`))
+          }
         }
+      }
+
+      if (receipt.payerType === 'CUSTOMER') {
+        const settlementRes = await this.sales.settleCustomerReceivable(
+          {
+            companyId: receipt.companyId,
+            customerId: receipt.payerId,
+            amountMinorUnits: receiptAmount,
+            currency: receipt.currency,
+            referenceId: receipt.id,
+          },
+          { client }
+        )
+        if (settlementRes.isErr) return err(new TreasuryError(settlementRes.error.message))
       }
 
       receipt.status = 'POSTED'
@@ -631,7 +787,7 @@ export class TypeOrmTreasuryService extends TreasuryContract {
   async getReceipt(
     id: string,
     options?: TransactionOptions
-  ): Promise<Result<ReceiptVoucherSnapshot, ReceiptNotFoundError>> {
+  ): Promise<Result<ReceiptVoucherSnapshot, ReceiptNotFoundError | ScopeForbiddenError>> {
     const manager = options?.client ?? this.receiptRepo.manager
     const entity = await manager.findOne(ReceiptVoucherEntity, {
       where: { id },
@@ -640,6 +796,8 @@ export class TypeOrmTreasuryService extends TreasuryContract {
     if (!entity) {
       return err(new ReceiptNotFoundError(id))
     }
+    const selectedScope = scopeMismatch(entity.companyId, options)
+    if (selectedScope) return err(new ScopeForbiddenError(selectedScope, 'receipt'))
     return ok({
       id: entity.id,
       companyId: entity.companyId,
@@ -665,7 +823,9 @@ export class TypeOrmTreasuryService extends TreasuryContract {
   async importBankStatement(
     input: ImportBankStatementInput,
     options?: TransactionOptions
-  ): Promise<Result<BankStatementSnapshot, TreasuryError | BankAccountNotFoundError>> {
+  ): Promise<
+    Result<BankStatementSnapshot, TreasuryError | BankAccountNotFoundError | ScopeForbiddenError>
+  > {
     const manager = options?.client ?? this.statementRepo.manager
     const bankAccount = await manager.findOne(BankAccountEntity, {
       where: { id: input.bankAccountId },
@@ -673,6 +833,9 @@ export class TypeOrmTreasuryService extends TreasuryContract {
     if (!bankAccount) {
       return err(new BankAccountNotFoundError(input.bankAccountId))
     }
+
+    const selectedScope = scopeMismatch(bankAccount.companyId, options)
+    if (selectedScope) return err(new ScopeForbiddenError(selectedScope, 'bank statement'))
 
     try {
       const entity = manager.create(BankStatementEntity, {
@@ -726,12 +889,12 @@ export class TypeOrmTreasuryService extends TreasuryContract {
   ): Promise<
     Result<
       BankReconciliationResult,
-      TreasuryError | BankStatementNotFoundError | BankAccountNotFoundError
+      TreasuryError | BankStatementNotFoundError | BankAccountNotFoundError | ScopeForbiddenError
     >
   > {
     return runInTransaction<
       BankReconciliationResult,
-      TreasuryError | BankStatementNotFoundError | BankAccountNotFoundError
+      TreasuryError | BankStatementNotFoundError | BankAccountNotFoundError | ScopeForbiddenError
     >(this.statementRepo.manager, options, async (manager) => {
       const statement = await manager.findOne(BankStatementEntity, {
         where: { id: statementId },
@@ -747,6 +910,9 @@ export class TypeOrmTreasuryService extends TreasuryContract {
       if (!bankAccount) {
         return err(new BankAccountNotFoundError(statement.bankAccountId))
       }
+
+      const selectedScope = scopeMismatch(bankAccount.companyId, options)
+      if (selectedScope) return err(new ScopeForbiddenError(selectedScope, 'bank statement'))
 
       // Collect posted payments & receipts
       const payments: PaymentVoucherEntity[] = await manager.find(PaymentVoucherEntity, {

@@ -26,4 +26,7 @@ export class OutboxEventEntity {
 
   @Column({ name: 'last_error', type: 'text', nullable: true })
   lastError!: string | null
+
+  @Column({ name: 'dead_lettered_at', type: 'timestamptz', nullable: true })
+  deadLetteredAt!: Date | null
 }

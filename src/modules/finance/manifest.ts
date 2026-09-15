@@ -7,7 +7,7 @@ export const financeManifest: ModuleManifest = {
   summary: '會計科目表、會計期間、傳票草稿與過帳、複式簿記平衡與即時試算表',
   category: 'Financials',
   author: 'FlashERP Core Team',
-  dependsOn: ['organization'],
+  dependsOn: ['organization', 'audit'],
   installable: true,
   autoInstall: true,
   icon: 'BookOpen',

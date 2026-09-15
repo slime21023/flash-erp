@@ -9,6 +9,8 @@ import {
   runInTransaction,
 } from '@platform/persistence/index.js'
 import { Money } from '@platform/kernel/index.js'
+import { scopeMismatch } from '@platform/context/index.js'
+import { ScopeForbiddenError } from '@platform/security/index.js'
 import {
   ApprovalPipeline,
   ApprovalPublicationError,
@@ -89,7 +91,9 @@ export class TypeOrmProcurementService extends ProcurementContract {
   async registerSupplier(
     input: RegisterSupplierInput,
     options?: TransactionOptions
-  ): Promise<Result<SupplierSnapshot, ProcurementError | SupplierAlreadyExistsError>> {
+  ): Promise<
+    Result<SupplierSnapshot, ProcurementError | SupplierAlreadyExistsError | ScopeForbiddenError>
+  > {
     const id = input.id.trim()
     const companyId = input.companyId.trim()
     const code = input.code.trim().toUpperCase()
@@ -98,6 +102,9 @@ export class TypeOrmProcurementService extends ProcurementContract {
     if (!id || !companyId || !code || !name) {
       return err(new ProcurementError('Supplier fields are required'))
     }
+
+    const selectedScope = scopeMismatch(companyId, options)
+    if (selectedScope) return err(new ScopeForbiddenError(selectedScope, 'supplier'))
 
     const manager = options?.client ?? this.supplierRepo.manager
     const duplicate = await manager
@@ -137,69 +144,96 @@ export class TypeOrmProcurementService extends ProcurementContract {
   async createPurchaseOrder(
     input: CreatePurchaseOrderInput,
     options?: TransactionOptions
-  ): Promise<Result<PurchaseOrderSnapshot, ProcurementError | SupplierNotFoundError>> {
-    return runInTransaction<PurchaseOrderSnapshot, ProcurementError | SupplierNotFoundError>(
-      this.poRepo.manager,
-      options,
-      async (client) => {
-        const id = input.id.trim()
-        const companyId = input.companyId.trim()
-        const supplierId = input.supplierId.trim()
-        const number = input.number.trim()
+  ): Promise<
+    Result<PurchaseOrderSnapshot, ProcurementError | SupplierNotFoundError | ScopeForbiddenError>
+  > {
+    return runInTransaction<
+      PurchaseOrderSnapshot,
+      ProcurementError | SupplierNotFoundError | ScopeForbiddenError
+    >(this.poRepo.manager, options, async (client) => {
+      const id = input.id.trim()
+      const companyId = input.companyId.trim()
+      const supplierId = input.supplierId.trim()
+      const number = input.number.trim()
 
-        if (!id || !companyId || !supplierId || !number || input.lines.length === 0) {
-          return err(
-            new ProcurementError('Purchase order fields and at least one line are required')
-          )
-        }
-
-        for (const line of input.lines) {
-          if (line.orderedQuantity <= 0n || line.unitCostMinorUnits < 0n) {
-            return err(new ProcurementError('Invalid line quantity or unit cost'))
-          }
-        }
-
-        const supplier = await client.findOne(SupplierEntity, {
-          where: { id: supplierId, companyId, isActive: true },
-        })
-        if (!supplier) {
-          return err(new SupplierNotFoundError(supplierId))
-        }
-
-        try {
-          const po = client.create(PurchaseOrderEntity, {
-            id,
-            companyId,
-            supplierId,
-            number,
-            status: 'DRAFT',
-          })
-          await client.save(po)
-
-          const lines = input.lines.map((line) =>
-            client.create(PurchaseOrderLineEntity, {
-              purchaseOrderId: id,
-              itemId: line.itemId,
-              orderedQuantity: line.orderedQuantity.toString(),
-              unitCostMinorUnits: line.unitCostMinorUnits.toString(),
-              currency: line.currency,
-            })
-          )
-          await client.save(lines)
-
-          return ok({
-            id,
-            companyId,
-            supplierId,
-            number,
-            status: 'DRAFT',
-            lines: input.lines,
-          })
-        } catch {
-          return err(new ProcurementError(`Unable to create purchase order: ${id}`))
-        }
+      if (!id || !companyId || !supplierId || !number || input.lines.length === 0) {
+        return err(new ProcurementError('Purchase order fields and at least one line are required'))
       }
-    )
+
+      const selectedScope = scopeMismatch(companyId, options)
+      if (selectedScope) return err(new ScopeForbiddenError(selectedScope, 'purchase order'))
+
+      const currencies = new Set(input.lines.map((line) => line.currency.trim().toUpperCase()))
+      if (currencies.size !== 1 || !/^[A-Z]{3}$/.test([...currencies][0] ?? '')) {
+        return err(new ProcurementError('All purchase order lines must use one currency'))
+      }
+
+      const lineKeys = new Set<string>()
+      const normalizedLines = input.lines.map((line) => ({
+        itemId: line.itemId.trim(),
+        orderedQuantity: line.orderedQuantity,
+        unitCostMinorUnits: line.unitCostMinorUnits,
+        currency: line.currency.trim().toUpperCase(),
+      }))
+      for (const line of normalizedLines) {
+        const itemId = line.itemId.trim()
+        if (
+          !itemId ||
+          !/^[A-Z]{3}$/.test(line.currency.trim().toUpperCase()) ||
+          line.orderedQuantity <= 0n ||
+          line.unitCostMinorUnits < 0n
+        ) {
+          return err(new ProcurementError('Invalid line quantity or unit cost'))
+        }
+        if (lineKeys.has(itemId)) {
+          return err(new ProcurementError(`Duplicate purchase order line: ${itemId}`))
+        }
+        lineKeys.add(itemId)
+
+        const itemRes = await this.inventory.findItem(companyId, itemId, { client })
+        if (itemRes.isErr) return err(new ProcurementError(itemRes.error.message))
+      }
+
+      const supplier = await client.findOne(SupplierEntity, {
+        where: { id: supplierId, companyId, isActive: true },
+      })
+      if (!supplier) {
+        return err(new SupplierNotFoundError(supplierId))
+      }
+
+      try {
+        const po = client.create(PurchaseOrderEntity, {
+          id,
+          companyId,
+          supplierId,
+          number,
+          status: 'DRAFT',
+        })
+        await client.save(po)
+
+        const lines = normalizedLines.map((line) =>
+          client.create(PurchaseOrderLineEntity, {
+            purchaseOrderId: id,
+            itemId: line.itemId,
+            orderedQuantity: line.orderedQuantity.toString(),
+            unitCostMinorUnits: line.unitCostMinorUnits.toString(),
+            currency: line.currency,
+          })
+        )
+        await client.save(lines)
+
+        return ok({
+          id,
+          companyId,
+          supplierId,
+          number,
+          status: 'DRAFT',
+          lines: normalizedLines,
+        })
+      } catch {
+        return err(new ProcurementError(`Unable to create purchase order: ${id}`))
+      }
+    })
   }
 
   async approvePurchaseOrder(
@@ -209,21 +243,32 @@ export class TypeOrmProcurementService extends ProcurementContract {
   ): Promise<
     Result<
       PurchaseOrderSnapshot,
-      PurchaseOrderNotFoundError | InvalidPurchaseOrderStateError | ApprovalError
+      | PurchaseOrderNotFoundError
+      | InvalidPurchaseOrderStateError
+      | ApprovalError
+      | ScopeForbiddenError
     >
   > {
     return runInTransaction<
       PurchaseOrderSnapshot,
-      PurchaseOrderNotFoundError | InvalidPurchaseOrderStateError | ApprovalError
+      | PurchaseOrderNotFoundError
+      | InvalidPurchaseOrderStateError
+      | ApprovalError
+      | ScopeForbiddenError
     >(this.poRepo.manager, options, async (manager) => {
-      const po = await manager.findOne(PurchaseOrderEntity, {
-        where: { id },
-        relations: ['lines'],
-      })
+      const po = await manager
+        .createQueryBuilder(PurchaseOrderEntity, 'po')
+        .leftJoinAndSelect('po.lines', 'lines')
+        .setLock('pessimistic_write')
+        .where('po.id = :id', { id })
+        .getOne()
 
       if (!po) {
         return err(new PurchaseOrderNotFoundError(id))
       }
+
+      const selectedScope = scopeMismatch(po.companyId, options)
+      if (selectedScope) return err(new ScopeForbiddenError(selectedScope, 'purchase order'))
 
       if (po.status !== 'DRAFT') {
         return err(new InvalidPurchaseOrderStateError(po.status, 'approve'))
@@ -302,12 +347,18 @@ export class TypeOrmProcurementService extends ProcurementContract {
   ): Promise<
     Result<
       GoodsReceiptSnapshot,
-      PurchaseOrderNotFoundError | InvalidPurchaseOrderStateError | ProcurementError
+      | PurchaseOrderNotFoundError
+      | InvalidPurchaseOrderStateError
+      | ProcurementError
+      | ScopeForbiddenError
     >
   > {
     return runInTransaction<
       GoodsReceiptSnapshot,
-      PurchaseOrderNotFoundError | InvalidPurchaseOrderStateError | ProcurementError
+      | PurchaseOrderNotFoundError
+      | InvalidPurchaseOrderStateError
+      | ProcurementError
+      | ScopeForbiddenError
     >(this.receiptRepo.manager, options, async (client) => {
       const id = input.id.trim()
       const purchaseOrderId = input.purchaseOrderId.trim()
@@ -317,28 +368,82 @@ export class TypeOrmProcurementService extends ProcurementContract {
         return err(new ProcurementError('id, purchaseOrderId, and warehouseId are required'))
       }
 
-      const po = await client.findOne(PurchaseOrderEntity, {
-        where: { id: purchaseOrderId },
-        relations: ['lines'],
-      })
+      const po = await client
+        .createQueryBuilder(PurchaseOrderEntity, 'po')
+        .leftJoinAndSelect('po.lines', 'lines')
+        .setLock('pessimistic_write')
+        .where('po.id = :id', { id: purchaseOrderId })
+        .getOne()
 
       if (!po) {
         return err(new PurchaseOrderNotFoundError(purchaseOrderId))
       }
 
+      const selectedScope = scopeMismatch(po.companyId, options)
+      if (selectedScope) return err(new ScopeForbiddenError(selectedScope, 'goods receipt'))
+
       if (po.status !== 'APPROVED') {
         return err(new InvalidPurchaseOrderStateError(po.status, 'receive'))
       }
 
+      const existingReceipt = await client.findOne(GoodsReceiptEntity, { where: { id } })
+      if (existingReceipt) return err(new ProcurementError(`Goods receipt already exists: ${id}`))
+
+      const warehouseRes = await this.inventory.findWarehouse(po.companyId, warehouseId, {
+        client,
+      })
+      if (warehouseRes.isErr) return err(new ProcurementError(warehouseRes.error.message))
+
+      const poLinesByItem = new Map((po.lines ?? []).map((line) => [line.itemId.trim(), line]))
+      const receivedByItem = new Map<string, bigint>()
+      const previousReceipts = await client.find(GoodsReceiptEntity, {
+        where: { purchaseOrderId: po.id },
+        relations: ['lines'],
+      })
+      for (const previousReceipt of previousReceipts) {
+        for (const line of previousReceipt.lines ?? []) {
+          receivedByItem.set(
+            line.itemId.trim(),
+            (receivedByItem.get(line.itemId.trim()) ?? 0n) + BigInt(line.receivedQuantity)
+          )
+        }
+      }
+
       const receiptLines: readonly GoodsReceiptLineInput[] =
         input.lines && input.lines.length > 0
-          ? Object.freeze([...input.lines])
-          : Object.freeze(
-              (po.lines ?? []).map((l) => ({
-                itemId: l.itemId,
-                receivedQuantity: BigInt(l.orderedQuantity),
+          ? Object.freeze(
+              input.lines.map((line) => ({
+                itemId: line.itemId.trim(),
+                receivedQuantity: line.receivedQuantity,
               }))
             )
+          : Object.freeze(
+              (po.lines ?? [])
+                .map((line) => ({
+                  itemId: line.itemId.trim(),
+                  receivedQuantity:
+                    BigInt(line.orderedQuantity) - (receivedByItem.get(line.itemId.trim()) ?? 0n),
+                }))
+                .filter((line) => line.receivedQuantity > 0n)
+            )
+
+      const receiptItemIds = new Set<string>()
+      for (const line of receiptLines) {
+        const itemId = line.itemId.trim()
+        const poLine = poLinesByItem.get(itemId)
+        if (!poLine || receiptItemIds.has(itemId) || line.receivedQuantity <= 0n) {
+          return err(new ProcurementError(`Invalid or duplicate goods receipt line: ${itemId}`))
+        }
+        receiptItemIds.add(itemId)
+        const receivedQuantity = (receivedByItem.get(itemId) ?? 0n) + line.receivedQuantity
+        if (receivedQuantity > BigInt(poLine.orderedQuantity)) {
+          return err(new ProcurementError(`Goods receipt exceeds PO quantity for item ${itemId}`))
+        }
+      }
+
+      if (receiptLines.length === 0) {
+        return err(new ProcurementError('No remaining purchase order quantity to receive'))
+      }
 
       try {
         const receipt = client.create(GoodsReceiptEntity, {
@@ -360,15 +465,15 @@ export class TypeOrmProcurementService extends ProcurementContract {
 
         // Automatically post stock movement if inventory contract is injected
         if (po.lines) {
-          const poLinesByItem = new Map(po.lines.map((l) => [l.itemId, l]))
           for (const line of receiptLines) {
             const poLine = poLinesByItem.get(line.itemId)
-            const unitCost = poLine ? BigInt(poLine.unitCostMinorUnits) : 0n
-            const currency = poLine?.currency ?? 'TWD'
+            if (!poLine) return err(new ProcurementError(`Item ${line.itemId} is not on PO`))
+            const unitCost = BigInt(poLine.unitCostMinorUnits)
+            const currency = poLine.currency
 
             const moveRes = await this.inventory.recordMovement(
               {
-                id: `mov-${id}-${line.itemId}`,
+                id: `mov-${id}-${line.itemId}-${warehouseId}`,
                 companyId: po.companyId,
                 itemId: line.itemId,
                 warehouseId,
@@ -418,7 +523,7 @@ export class TypeOrmProcurementService extends ProcurementContract {
   async createRequisition(
     input: CreatePurchaseRequisitionInput,
     options?: TransactionOptions
-  ): Promise<Result<PurchaseRequisitionSnapshot, ProcurementError>> {
+  ): Promise<Result<PurchaseRequisitionSnapshot, ProcurementError | ScopeForbiddenError>> {
     const id = input.id.trim()
     const companyId = input.companyId.trim()
     const requesterId = input.requesterId.trim()
@@ -429,6 +534,9 @@ export class TypeOrmProcurementService extends ProcurementContract {
         new ProcurementError('Purchase requisition fields and at least one line are required')
       )
     }
+
+    const selectedScope = scopeMismatch(companyId, options)
+    if (selectedScope) return err(new ScopeForbiddenError(selectedScope, 'purchase requisition'))
 
     for (const line of input.lines) {
       if (line.requestedQuantity <= 0n || line.estimatedCostMinorUnits < 0n) {
@@ -479,7 +587,7 @@ export class TypeOrmProcurementService extends ProcurementContract {
   ): Promise<
     Result<
       PurchaseRequisitionSnapshot,
-      PurchaseRequisitionNotFoundError | InvalidPurchaseRequisitionStateError
+      PurchaseRequisitionNotFoundError | InvalidPurchaseRequisitionStateError | ScopeForbiddenError
     >
   > {
     const manager = options?.client ?? this.requisitionRepo.manager
@@ -491,6 +599,9 @@ export class TypeOrmProcurementService extends ProcurementContract {
     if (!pr) {
       return err(new PurchaseRequisitionNotFoundError(id))
     }
+
+    const selectedScope = scopeMismatch(pr.companyId, options)
+    if (selectedScope) return err(new ScopeForbiddenError(selectedScope, 'purchase requisition'))
 
     if (pr.status !== 'DRAFT') {
       return err(new InvalidPurchaseRequisitionStateError(pr.status, 'submit'))
@@ -522,12 +633,18 @@ export class TypeOrmProcurementService extends ProcurementContract {
   ): Promise<
     Result<
       PurchaseRequisitionSnapshot,
-      PurchaseRequisitionNotFoundError | InvalidPurchaseRequisitionStateError | ApprovalError
+      | PurchaseRequisitionNotFoundError
+      | InvalidPurchaseRequisitionStateError
+      | ApprovalError
+      | ScopeForbiddenError
     >
   > {
     return runInTransaction<
       PurchaseRequisitionSnapshot,
-      PurchaseRequisitionNotFoundError | InvalidPurchaseRequisitionStateError | ApprovalError
+      | PurchaseRequisitionNotFoundError
+      | InvalidPurchaseRequisitionStateError
+      | ApprovalError
+      | ScopeForbiddenError
     >(this.requisitionRepo.manager, options, async (manager) => {
       const pr = await manager.findOne(PurchaseRequisitionEntity, {
         where: { id },
@@ -537,6 +654,9 @@ export class TypeOrmProcurementService extends ProcurementContract {
       if (!pr) {
         return err(new PurchaseRequisitionNotFoundError(id))
       }
+
+      const selectedScope = scopeMismatch(pr.companyId, options)
+      if (selectedScope) return err(new ScopeForbiddenError(selectedScope, 'purchase requisition'))
 
       if (pr.status !== 'SUBMITTED' && pr.status !== 'DRAFT') {
         return err(new InvalidPurchaseRequisitionStateError(pr.status, 'approve'))
@@ -584,6 +704,7 @@ export class TypeOrmProcurementService extends ProcurementContract {
       | InvalidPurchaseRequisitionStateError
       | SupplierNotFoundError
       | ProcurementError
+      | ScopeForbiddenError
     >
   > {
     const manager = options?.client ?? this.requisitionRepo.manager
@@ -595,6 +716,9 @@ export class TypeOrmProcurementService extends ProcurementContract {
     if (!pr) {
       return err(new PurchaseRequisitionNotFoundError(requisitionId))
     }
+
+    const selectedScope = scopeMismatch(pr.companyId, options)
+    if (selectedScope) return err(new ScopeForbiddenError(selectedScope, 'purchase requisition'))
 
     if (pr.status !== 'APPROVED') {
       return err(new InvalidPurchaseRequisitionStateError(pr.status, 'convert'))
@@ -639,6 +763,7 @@ export class TypeOrmProcurementService extends ProcurementContract {
       | SupplierNotFoundError
       | VendorInvoiceAlreadyExistsError
       | ProcurementError
+      | ScopeForbiddenError
     >
   > {
     const id = input.id.trim()
@@ -660,12 +785,16 @@ export class TypeOrmProcurementService extends ProcurementContract {
       return err(new ProcurementError('All invoice fields and at least one line are required'))
     }
 
+    const selectedScope = scopeMismatch(companyId, options)
+    if (selectedScope) return err(new ScopeForbiddenError(selectedScope, 'vendor invoice'))
+
     return runInTransaction<
       VendorInvoiceSnapshot,
       | PurchaseOrderNotFoundError
       | SupplierNotFoundError
       | VendorInvoiceAlreadyExistsError
       | ProcurementError
+      | ScopeForbiddenError
     >(this.invoiceRepo.manager, options, async (manager) => {
       const supplier = await manager.findOne(SupplierEntity, {
         where: { id: supplierId, companyId, isActive: true },
@@ -676,9 +805,45 @@ export class TypeOrmProcurementService extends ProcurementContract {
 
       const po = await manager.findOne(PurchaseOrderEntity, {
         where: { id: purchaseOrderId, companyId },
+        relations: ['lines'],
       })
       if (!po) {
         return err(new PurchaseOrderNotFoundError(purchaseOrderId))
+      }
+
+      if (po.supplierId !== supplierId) {
+        return err(new ProcurementError('Vendor invoice supplier must match purchase order'))
+      }
+
+      const currency = input.currency.trim().toUpperCase()
+      const taxRateBps = input.taxRateBasisPoints ?? 500
+      if (
+        !/^[A-Z]{3}$/.test(currency) ||
+        !Number.isInteger(taxRateBps) ||
+        taxRateBps < 0 ||
+        taxRateBps > 10_000
+      ) {
+        return err(new ProcurementError('Invoice currency or tax rate is invalid'))
+      }
+
+      const poLinesByItem = new Map((po.lines ?? []).map((line) => [line.itemId, line]))
+      const invoiceItemIds = new Set<string>()
+      for (const line of input.lines) {
+        const itemId = line.itemId.trim()
+        const poLine = poLinesByItem.get(itemId)
+        const expectedLineTotal = line.invoicedQuantity * line.unitPriceMinorUnits
+        if (
+          !poLine ||
+          invoiceItemIds.has(itemId) ||
+          line.invoicedQuantity <= 0n ||
+          line.unitPriceMinorUnits < 0n ||
+          (line.lineTotalMinorUnits !== undefined &&
+            line.lineTotalMinorUnits !== expectedLineTotal) ||
+          poLine.currency !== currency
+        ) {
+          return err(new ProcurementError(`Invalid vendor invoice line: ${itemId}`))
+        }
+        invoiceItemIds.add(itemId)
       }
 
       const existingInvoice = await manager.findOne(VendorInvoiceEntity, {
@@ -690,14 +855,13 @@ export class TypeOrmProcurementService extends ProcurementContract {
 
       // Compute line totals and net amount
       const processedLines = input.lines.map((l) => ({
-        itemId: l.itemId,
+        itemId: l.itemId.trim(),
         invoicedQuantity: l.invoicedQuantity,
         unitPriceMinorUnits: l.unitPriceMinorUnits,
-        lineTotalMinorUnits: l.lineTotalMinorUnits ?? l.invoicedQuantity * l.unitPriceMinorUnits,
+        lineTotalMinorUnits: l.invoicedQuantity * l.unitPriceMinorUnits,
       }))
 
       const netAmountMinorUnits = processedLines.reduce((sum, l) => sum + l.lineTotalMinorUnits, 0n)
-      const taxRateBps = input.taxRateBasisPoints ?? 500
       const { taxAmountMinorUnits, totalAmountMinorUnits } = calculateTaxAndTotal(
         netAmountMinorUnits,
         taxRateBps
@@ -711,7 +875,7 @@ export class TypeOrmProcurementService extends ProcurementContract {
           purchaseOrderId,
           invoiceNumber,
           invoiceDate,
-          currency: input.currency,
+          currency,
           taxRateBasisPoints: taxRateBps,
           netAmountMinorUnits: netAmountMinorUnits.toString(),
           taxAmountMinorUnits: taxAmountMinorUnits.toString(),
@@ -738,7 +902,7 @@ export class TypeOrmProcurementService extends ProcurementContract {
           purchaseOrderId,
           invoiceNumber,
           invoiceDate,
-          currency: input.currency,
+          currency,
           taxRateBasisPoints: taxRateBps,
           netAmountMinorUnits,
           taxAmountMinorUnits,
@@ -764,6 +928,7 @@ export class TypeOrmProcurementService extends ProcurementContract {
       | InvalidVendorInvoiceStateError
       | MatchingToleranceExceededError
       | ProcurementError
+      | ScopeForbiddenError
     >
   > {
     return runInTransaction<
@@ -773,24 +938,32 @@ export class TypeOrmProcurementService extends ProcurementContract {
       | InvalidVendorInvoiceStateError
       | MatchingToleranceExceededError
       | ProcurementError
+      | ScopeForbiddenError
     >(this.invoiceRepo.manager, options, async (manager) => {
-      const invoice = await manager.findOne(VendorInvoiceEntity, {
-        where: { id: invoiceId },
-        relations: ['lines'],
-      })
+      const invoice = await manager
+        .createQueryBuilder(VendorInvoiceEntity, 'invoice')
+        .leftJoinAndSelect('invoice.lines', 'lines')
+        .setLock('pessimistic_write')
+        .where('invoice.id = :invoiceId', { invoiceId })
+        .getOne()
 
       if (!invoice) {
         return err(new VendorInvoiceNotFoundError(invoiceId))
       }
 
+      const selectedScope = scopeMismatch(invoice.companyId, options)
+      if (selectedScope) return err(new ScopeForbiddenError(selectedScope, 'vendor invoice'))
+
       if (invoice.status !== 'RECEIVED' && invoice.status !== 'DISPUTED') {
         return err(new InvalidVendorInvoiceStateError(invoice.status, 'match'))
       }
 
-      const po = await manager.findOne(PurchaseOrderEntity, {
-        where: { id: invoice.purchaseOrderId },
-        relations: ['lines'],
-      })
+      const po = await manager
+        .createQueryBuilder(PurchaseOrderEntity, 'po')
+        .leftJoinAndSelect('po.lines', 'lines')
+        .setLock('pessimistic_write')
+        .where('po.id = :id', { id: invoice.purchaseOrderId })
+        .getOne()
       if (!po) {
         return err(new PurchaseOrderNotFoundError(invoice.purchaseOrderId))
       }
@@ -807,6 +980,26 @@ export class TypeOrmProcurementService extends ProcurementContract {
             itemId: line.itemId,
             receivedQuantity: BigInt(line.receivedQuantity),
           })
+        }
+      }
+
+      const previouslyInvoicedByItem = new Map<string, bigint>()
+      const priorInvoices = await manager.find(VendorInvoiceEntity, {
+        where: { purchaseOrderId: po.id },
+        relations: ['lines'],
+      })
+      for (const priorInvoice of priorInvoices) {
+        if (
+          priorInvoice.id === invoice.id ||
+          (priorInvoice.status !== 'MATCHED' && priorInvoice.status !== 'POSTED')
+        ) {
+          continue
+        }
+        for (const line of priorInvoice.lines ?? []) {
+          previouslyInvoicedByItem.set(
+            line.itemId,
+            (previouslyInvoicedByItem.get(line.itemId) ?? 0n) + BigInt(line.invoicedQuantity)
+          )
         }
       }
 
@@ -838,7 +1031,13 @@ export class TypeOrmProcurementService extends ProcurementContract {
         })),
       }
 
-      const matchRes = ThreeWayMatcher.match(poLines, receiptLines, invoiceSnapshot, tolerance)
+      const matchRes = ThreeWayMatcher.match(
+        poLines,
+        receiptLines,
+        invoiceSnapshot,
+        tolerance,
+        previouslyInvoicedByItem
+      )
       if (matchRes.isErr) {
         invoice.status = 'DISPUTED'
         await manager.save(invoice)
@@ -871,23 +1070,46 @@ export class TypeOrmProcurementService extends ProcurementContract {
   ): Promise<
     Result<
       AccountsPayableVoucherSnapshot,
-      VendorInvoiceNotFoundError | InvalidVendorInvoiceStateError | AccountsPayablePostingError
+      | VendorInvoiceNotFoundError
+      | InvalidVendorInvoiceStateError
+      | AccountsPayablePostingError
+      | ScopeForbiddenError
     >
   > {
     return runInTransaction<
       AccountsPayableVoucherSnapshot,
-      VendorInvoiceNotFoundError | InvalidVendorInvoiceStateError | AccountsPayablePostingError
+      | VendorInvoiceNotFoundError
+      | InvalidVendorInvoiceStateError
+      | AccountsPayablePostingError
+      | ScopeForbiddenError
     >(this.invoiceRepo.manager, options, async (client) => {
-      const invoice = await client.findOne(VendorInvoiceEntity, {
-        where: { id: input.invoiceId },
-      })
+      const invoice = await client
+        .createQueryBuilder(VendorInvoiceEntity, 'invoice')
+        .setLock('pessimistic_write')
+        .where('invoice.id = :id', { id: input.invoiceId })
+        .getOne()
 
       if (!invoice) {
         return err(new VendorInvoiceNotFoundError(input.invoiceId))
       }
 
+      const selectedScope = scopeMismatch(invoice.companyId, options)
+      if (selectedScope) return err(new ScopeForbiddenError(selectedScope, 'accounts payable'))
+
       if (invoice.status !== 'MATCHED') {
         return err(new InvalidVendorInvoiceStateError(invoice.status, 'create AP voucher'))
+      }
+
+      if (
+        !input.voucherId.trim() ||
+        !input.voucherNumber.trim() ||
+        !/^\d{4}-\d{2}-\d{2}$/.test(input.accountingDate)
+      ) {
+        return err(
+          new AccountsPayablePostingError(
+            'voucherId, voucherNumber, and ISO accountingDate are required'
+          )
+        )
       }
 
       const netMinor = BigInt(invoice.netAmountMinorUnits)
@@ -953,6 +1175,13 @@ export class TypeOrmProcurementService extends ProcurementContract {
         if (draftRes.isErr) {
           return err(
             new AccountsPayablePostingError(`Finance createDraft failed: ${draftRes.error.message}`)
+          )
+        }
+
+        const postRes = await this.finance.postDraft(input.voucherId, undefined, { client })
+        if (postRes.isErr) {
+          return err(
+            new AccountsPayablePostingError(`Finance posting failed: ${postRes.error.message}`)
           )
         }
       }

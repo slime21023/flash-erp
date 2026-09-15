@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onMount } from 'svelte'
   import Navbar from './lib/components/Navbar.svelte'
   import AppSwitcher from './lib/components/AppSwitcher.svelte'
   import DashboardApp from './apps/DashboardApp.svelte'
@@ -9,7 +10,14 @@
   import FinanceApp from './apps/FinanceApp.svelte'
   import TreasuryApp from './apps/TreasuryApp.svelte'
   import OrganizationApp from './apps/OrganizationApp.svelte'
-  import { login, logout, readAuthSession, type AuthSession } from './lib/api.js'
+  import {
+    clearAuthSession,
+    login,
+    logout,
+    readAuthSession,
+    restoreSession,
+    type AuthSession,
+  } from './lib/api.js'
   import type { ActiveAppId } from './lib/types.js'
 
   let session = $state<AuthSession | null>(readAuthSession())
@@ -19,6 +27,25 @@
   let password = $state('')
   let authError = $state('')
   let isLoggingIn = $state(false)
+
+  onMount(() => {
+    if (session) return
+    restoreSession()
+      .then((restored) => {
+        if (restored) session = restored
+      })
+      .catch(() => undefined)
+  })
+
+  $effect(() => {
+    const handleSessionExpired = () => {
+      session = null
+      isSwitcherOpen = false
+      authError = '登入已過期，請重新登入。'
+    }
+    window.addEventListener('flasherp:session-expired', handleSessionExpired)
+    return () => window.removeEventListener('flasherp:session-expired', handleSessionExpired)
+  })
 
   async function handleLogin(event: SubmitEvent) {
     event.preventDefault()
@@ -36,6 +63,7 @@
 
   async function handleLogout() {
     await logout()
+    clearAuthSession()
     session = null
     isSwitcherOpen = false
   }

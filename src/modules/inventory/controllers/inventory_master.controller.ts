@@ -9,6 +9,7 @@ import { RegisterItemDto, RegisterUnitDto, RegisterWarehouseDto } from '../dto/i
 export class InventoryMasterController {
   constructor(private readonly inventory: InventoryContract) {}
 
+  @RequirePermission('inventory.master.write')
   @Post('units')
   async unit(@Body() dto: RegisterUnitDto, @Res() res: Response) {
     const result = await this.inventory.registerUnit(dto)

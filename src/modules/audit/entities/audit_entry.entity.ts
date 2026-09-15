@@ -1,6 +1,7 @@
-import { Column, CreateDateColumn, Entity, PrimaryGeneratedColumn } from 'typeorm'
+import { Column, CreateDateColumn, Entity, Index, PrimaryGeneratedColumn } from 'typeorm'
 
 @Entity('audit_entries')
+@Index('uq_audit_entries_event_id', ['eventId'], { unique: true, where: 'event_id IS NOT NULL' })
 export class AuditEntryEntity {
   @PrimaryGeneratedColumn('increment', { type: 'bigint' })
   id!: string
@@ -25,6 +26,9 @@ export class AuditEntryEntity {
 
   @Column({ name: 'request_id', type: 'varchar', length: 120, nullable: true })
   requestId!: string | null
+
+  @Column({ name: 'event_id', type: 'varchar', length: 128, nullable: true })
+  eventId!: string | null
 
   @CreateDateColumn({ name: 'occurred_at', type: 'timestamptz' })
   occurredAt!: Date

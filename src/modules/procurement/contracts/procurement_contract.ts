@@ -1,5 +1,6 @@
 import type { Result } from '@platform/fp/index.js'
 import type { TransactionOptions } from '@platform/persistence/index.js'
+import type { ScopeForbiddenError } from '@platform/security/index.js'
 import type { ApprovalError } from '@platform/workflow/index.js'
 import type {
   AccountsPayablePostingError,
@@ -208,12 +209,16 @@ export abstract class ProcurementContract {
   abstract registerSupplier(
     input: RegisterSupplierInput,
     options?: TransactionOptions
-  ): Promise<Result<SupplierSnapshot, ProcurementError | SupplierAlreadyExistsError>>
+  ): Promise<
+    Result<SupplierSnapshot, ProcurementError | SupplierAlreadyExistsError | ScopeForbiddenError>
+  >
 
   abstract createPurchaseOrder(
     input: CreatePurchaseOrderInput,
     options?: TransactionOptions
-  ): Promise<Result<PurchaseOrderSnapshot, ProcurementError | SupplierNotFoundError>>
+  ): Promise<
+    Result<PurchaseOrderSnapshot, ProcurementError | SupplierNotFoundError | ScopeForbiddenError>
+  >
 
   abstract approvePurchaseOrder(
     id: string,
@@ -222,7 +227,10 @@ export abstract class ProcurementContract {
   ): Promise<
     Result<
       PurchaseOrderSnapshot,
-      PurchaseOrderNotFoundError | InvalidPurchaseOrderStateError | ApprovalError
+      | PurchaseOrderNotFoundError
+      | InvalidPurchaseOrderStateError
+      | ApprovalError
+      | ScopeForbiddenError
     >
   >
 
@@ -232,14 +240,17 @@ export abstract class ProcurementContract {
   ): Promise<
     Result<
       GoodsReceiptSnapshot,
-      PurchaseOrderNotFoundError | InvalidPurchaseOrderStateError | ProcurementError
+      | PurchaseOrderNotFoundError
+      | InvalidPurchaseOrderStateError
+      | ProcurementError
+      | ScopeForbiddenError
     >
   >
 
   abstract createRequisition(
     input: CreatePurchaseRequisitionInput,
     options?: TransactionOptions
-  ): Promise<Result<PurchaseRequisitionSnapshot, ProcurementError>>
+  ): Promise<Result<PurchaseRequisitionSnapshot, ProcurementError | ScopeForbiddenError>>
 
   abstract submitRequisition(
     id: string,
@@ -247,7 +258,7 @@ export abstract class ProcurementContract {
   ): Promise<
     Result<
       PurchaseRequisitionSnapshot,
-      PurchaseRequisitionNotFoundError | InvalidPurchaseRequisitionStateError
+      PurchaseRequisitionNotFoundError | InvalidPurchaseRequisitionStateError | ScopeForbiddenError
     >
   >
 
@@ -258,7 +269,10 @@ export abstract class ProcurementContract {
   ): Promise<
     Result<
       PurchaseRequisitionSnapshot,
-      PurchaseRequisitionNotFoundError | InvalidPurchaseRequisitionStateError | ApprovalError
+      | PurchaseRequisitionNotFoundError
+      | InvalidPurchaseRequisitionStateError
+      | ApprovalError
+      | ScopeForbiddenError
     >
   >
 
@@ -273,6 +287,7 @@ export abstract class ProcurementContract {
       | InvalidPurchaseRequisitionStateError
       | SupplierNotFoundError
       | ProcurementError
+      | ScopeForbiddenError
     >
   >
 
@@ -286,6 +301,7 @@ export abstract class ProcurementContract {
       | SupplierNotFoundError
       | VendorInvoiceAlreadyExistsError
       | ProcurementError
+      | ScopeForbiddenError
     >
   >
 
@@ -301,6 +317,7 @@ export abstract class ProcurementContract {
       | InvalidVendorInvoiceStateError
       | MatchingToleranceExceededError
       | ProcurementError
+      | ScopeForbiddenError
     >
   >
 
@@ -310,7 +327,10 @@ export abstract class ProcurementContract {
   ): Promise<
     Result<
       AccountsPayableVoucherSnapshot,
-      VendorInvoiceNotFoundError | InvalidVendorInvoiceStateError | AccountsPayablePostingError
+      | VendorInvoiceNotFoundError
+      | InvalidVendorInvoiceStateError
+      | AccountsPayablePostingError
+      | ScopeForbiddenError
     >
   >
 }

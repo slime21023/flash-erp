@@ -24,6 +24,10 @@ export class InMemoryAuditService extends AuditContract {
       return err(new InvalidAuditEntryError('action, entityType, and entityId are required'))
     }
 
+    const eventId = input.eventId?.trim()
+    const existing = eventId ? this.#entries.find((entry) => entry.eventId === eventId) : undefined
+    if (existing) return ok(existing)
+
     const snapshot: AuditEntrySnapshot = Object.freeze({
       id: this.#nextId++,
       ...(input.actorId && typeof input.actorId === 'string'
@@ -37,6 +41,7 @@ export class InMemoryAuditService extends AuditContract {
       ...(input.requestId && typeof input.requestId === 'string'
         ? { requestId: input.requestId.trim() }
         : {}),
+      ...(eventId ? { eventId } : {}),
       occurredAt: new Date(),
     })
 

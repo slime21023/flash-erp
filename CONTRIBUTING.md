@@ -44,7 +44,7 @@ Before writing or submitting any code, you **must strictly adhere** to the follo
 
 ```bash
 # 1. Clone repository
-git clone https://github.com/your-org/FlashERP.git
+git clone https://github.com/slime21023/flash-erp.git
 cd FlashERP
 
 # 2. Install dependencies for all workspaces
@@ -56,17 +56,20 @@ cp .env.example .env
 # 4. Start local PostgreSQL (port 5433 by default)
 docker compose up -d postgres
 
-# 5. Run automated test suite
+# 5. Run automated unit and property-based test suite
 npm test
 
-# 6. Initialize administrative bootstrap
+# 6. Run PostgreSQL integration tests against the isolated flash_erp_test database
+npm run test:integration
+
+# 7. Initialize administrative bootstrap
 $env:ADMIN_PASSWORD = 'change-this-before-use'
 npm run seed:admin
 
-# 7. Start backend development server (port 3333)
+# 8. Start backend development server (port 3333)
 npm run start:dev
 
-# 8. Start frontend Svelte console (port 5173)
+# 9. Start frontend Svelte console (port 5173)
 npm run dev -w frontend
 ```
 
@@ -94,5 +97,7 @@ npm run architecture:check   # Modular boundary guard
 npm test                     # Unit & Property-Based tests (Vitest)
 npm run lint                 # ESLint check
 npm run format:check         # Prettier style check
-npm run build                # Backend & Frontend builds
+npm run build             # Backend build
+npm run check -w frontend
+npm run build -w frontend # Frontend build
 ```

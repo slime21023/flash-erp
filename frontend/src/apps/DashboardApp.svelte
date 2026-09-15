@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte'
-  import { fetchModules } from '../lib/api.js'
+  import { API_BASE, fetchModules } from '../lib/api.js'
   import type { ModuleManifest } from '../lib/types.js'
 
   let modules = $state<ModuleManifest[]>([])
@@ -50,7 +50,7 @@
 
     <div class="flex items-center space-x-2">
       <a
-        href="http://localhost:3333/api/docs"
+        href={`${API_BASE}/api/docs`}
         target="_blank"
         rel="noreferrer"
         class="px-3.5 py-2 text-xs font-semibold rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white shadow transition flex items-center space-x-1.5"

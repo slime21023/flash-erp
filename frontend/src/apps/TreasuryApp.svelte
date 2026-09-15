@@ -1,54 +1,29 @@
 <script lang="ts">
-  let bankAccounts = $state([
-    { id: 'BA-01', bank: '台灣銀行 (營業部)', accountNo: '003-004-123456', currency: 'TWD', bookBalance: 3200000, bankBalance: 3200000 },
-    { id: 'BA-02', bank: '玉山銀行 (台北分行)', accountNo: '808-112-987654', currency: 'TWD', bookBalance: 1300000, bankBalance: 1300000 },
-  ])
+  import { ApiError, apiRequest, readAuthSession } from '../lib/api.js'
 
-  let isReconciled = $state(true)
+  type BankAccount = { id: string; companyId: string; accountNumber: string; bankName: string; currency: string; currentBalanceMinorUnits: string; isActive: boolean }
+  type Payment = { id: string; paymentNumber: string; status: string; amountMinorUnits: string; currency: string }
+  const session = readAuthSession()
+  let companyId = $state(session?.user.organizationUnitIds[0] ?? '')
+  let accountId = $state(''); let accountNumber = $state(''); let bankCode = $state(''); let bankName = $state(''); let accountName = $state(''); let glAccountId = $state(''); let initialBalanceMinorUnits = $state('0'); let currency = $state('TWD')
+  let paymentId = $state(''); let paymentNumber = $state(''); let beneficiaryId = $state(''); let amountMinorUnits = $state('0'); let payment = $state<Payment | null>(null)
+  let accounts = $state<BankAccount[]>([]); let message = $state<string | null>(null); let busy = $state(false)
+
+  function errorMessage(error: unknown) { return error instanceof ApiError || error instanceof Error ? error.message : '操作失敗' }
+  async function run(action: () => Promise<void>) { busy = true; message = null; try { await action() } catch (error) { message = errorMessage(error) } finally { busy = false } }
+  async function createAccount() { await run(async () => { accountId = accountId || `bank-${crypto.randomUUID()}`; const account = await apiRequest<BankAccount>('/treasury/accounts', { method: 'POST', body: { id: accountId, companyId, accountNumber, bankCode, bankName, accountName, currency, glAccountId, initialBalanceMinorUnits } }); accountId = account.id; accounts = [account, ...accounts.filter((item) => item.id !== account.id)]; message = `銀行帳戶 ${account.accountNumber} 已建立。` }) }
+  async function loadAccounts() { await run(async () => { const query = new URLSearchParams({ companyId }); accounts = await apiRequest<BankAccount[]>(`/treasury/accounts?${query}`); message = '銀行帳戶已載入。' }) }
+  async function createPayment() { await run(async () => { paymentId = paymentId || `payment-${crypto.randomUUID()}`; paymentNumber = paymentNumber || `PAY-${Date.now()}`; const created = await apiRequest<Payment>('/treasury/payments', { method: 'POST', body: { id: paymentId, companyId, bankAccountId: accountId, paymentNumber, paymentDate: new Date().toISOString().slice(0, 10), beneficiaryType: 'OTHER', beneficiaryId, currency, amountMinorUnits } }); payment = created; message = `付款單 ${created.paymentNumber} 已建立。` }) }
+  async function postPayment() { const current = payment; if (!current) return; await run(async () => { const posted = await apiRequest<Payment>(`/treasury/payments/${encodeURIComponent(current.id)}/post`, { method: 'POST' }); payment = posted; message = `付款單 ${posted.paymentNumber} 已過帳。` }) }
 </script>
 
 <div class="max-w-7xl mx-auto p-6 space-y-6">
-  <div class="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
-    <div>
-      <span class="text-[10px] font-bold text-cyan-600 uppercase tracking-wider">出納資金與銀行對帳 (Treasury)</span>
-      <h2 class="text-xl font-extrabold text-slate-900">企業銀行帳戶與自動對帳調節</h2>
-      <p class="text-xs text-slate-500">支援單據沖銷核銷與規則式銀行對帳單自動撮合</p>
-    </div>
-
-    <div class="flex items-center space-x-2">
-      <span class="px-3 py-1.5 rounded-lg border bg-cyan-50 border-cyan-300 text-cyan-800 text-xs font-semibold">
-        自動對帳規則引擎就緒
-      </span>
-    </div>
-  </div>
-
-  <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-    {#each bankAccounts as ba}
-      <div class="bg-white rounded-xl border border-slate-200 shadow-xs p-5 space-y-4">
-        <div class="flex items-center justify-between">
-          <div>
-            <h3 class="font-bold text-sm text-slate-900">{ba.bank}</h3>
-            <p class="font-mono text-xs text-slate-500">{ba.accountNo}</p>
-          </div>
-          <span class="px-2 py-0.5 rounded text-[10px] font-bold bg-slate-100 text-slate-700">{ba.currency}</span>
-        </div>
-
-        <div class="grid grid-cols-2 gap-2 pt-2 border-t border-slate-100 text-xs">
-          <div>
-            <span class="text-slate-400">系統帳面餘額</span>
-            <p class="font-bold text-slate-900">NT$ {ba.bookBalance.toLocaleString()}</p>
-          </div>
-          <div>
-            <span class="text-slate-400">銀行對帳單餘額</span>
-            <p class="font-bold text-slate-900">NT$ {ba.bankBalance.toLocaleString()}</p>
-          </div>
-        </div>
-
-        <div class="pt-2 flex items-center justify-between text-[11px] text-emerald-600 font-semibold">
-          <span>✓ 對帳狀態：無未達帳與差額</span>
-          <span class="text-slate-400">調節表已平</span>
-        </div>
-      </div>
-    {/each}
-  </div>
+  <div><span class="label">出納資金與銀行對帳 (Treasury)</span><h2 class="title">銀行帳戶與付款</h2><p class="hint">帳面餘額與付款狀態由 Treasury API 提供。</p></div>
+  {#if message}<div class="message" role="status">{message}</div>{/if}
+  <section class="panel"><h3>銀行帳戶</h3><div class="grid"><label>公司 ID<input bind:value={companyId} /></label><label>帳戶 ID<input bind:value={accountId} placeholder="留白自動產生" /></label><label>帳號<input bind:value={accountNumber} /></label><label>銀行代碼<input bind:value={bankCode} /></label><label>銀行名稱<input bind:value={bankName} /></label><label>戶名<input bind:value={accountName} /></label><label>GL 科目 ID<input bind:value={glAccountId} /></label><label>初始餘額<input bind:value={initialBalanceMinorUnits} inputmode="numeric" /></label><label>幣別<input bind:value={currency} maxlength="3" /></label><button onclick={createAccount} disabled={busy}>建立帳戶</button><button onclick={loadAccounts} disabled={busy}>載入帳戶</button></div>{#if accounts.length}<div class="list">{#each accounts as account}<div><strong>{account.bankName}</strong><span>{account.accountNumber}</span><span>NT$ {account.currentBalanceMinorUnits}</span><span>{account.isActive ? 'ACTIVE' : 'INACTIVE'}</span></div>{/each}</div>{/if}</section>
+  <section class="panel"><h3>付款單</h3><div class="grid"><label>付款 ID<input bind:value={paymentId} placeholder="留白自動產生" /></label><label>付款號碼<input bind:value={paymentNumber} placeholder="留白自動產生" /></label><label>銀行帳戶 ID<input bind:value={accountId} /></label><label>受款人 ID<input bind:value={beneficiaryId} /></label><label>金額（最小單位）<input bind:value={amountMinorUnits} inputmode="numeric" /></label><button onclick={createPayment} disabled={busy}>建立付款</button></div>{#if payment}<div class="result"><pre>{JSON.stringify(payment, null, 2)}</pre><button onclick={postPayment} disabled={busy || payment.status !== 'DRAFT'}>過帳付款</button></div>{/if}</section>
 </div>
+
+<style>
+  .label { font-size: .625rem; font-weight: 700; color: #0e7490; text-transform: uppercase; letter-spacing: .08em; } .title { margin-top: .25rem; font-size: 1.25rem; font-weight: 800; } .hint { margin-top: .25rem; color: #64748b; font-size: .75rem; } .panel { display: grid; gap: 1rem; background: white; border: 1px solid #e2e8f0; border-radius: .75rem; padding: 1.25rem; } h3 { font-size: .875rem; font-weight: 700; } .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr)); gap: .75rem; font-size: .75rem; } label { display: grid; gap: .25rem; color: #475569; } input { width: 100%; border: 1px solid #cbd5e1; border-radius: .5rem; padding: .5rem .625rem; } button { align-self: end; border-radius: .5rem; background: #0891b2; color: white; padding: .5rem .75rem; font-size: .75rem; font-weight: 700; } button:disabled { opacity: .5; } .message { border: 1px solid #a5f3fc; border-radius: .5rem; background: #ecfeff; padding: .75rem; color: #155e75; font-size: .75rem; } .list { display: grid; gap: .5rem; border-top: 1px solid #f1f5f9; padding-top: .75rem; } .list div { display: flex; flex-wrap: wrap; gap: 1rem; border-radius: .5rem; background: #f8fafc; padding: .75rem; font-size: .75rem; } .list span { color: #64748b; } .result { display: flex; align-items: end; gap: .75rem; } pre { overflow: auto; flex: 1; border-radius: .5rem; background: #0f172a; padding: .75rem; color: #e2e8f0; font-size: .75rem; }
+</style>

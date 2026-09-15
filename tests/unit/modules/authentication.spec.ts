@@ -33,3 +33,24 @@ test('local authentication issues, validates, and revokes opaque bearer tokens',
   const afterLogout = await service.authenticate(login.value.accessToken)
   assert.equal(afterLogout.isErr, true)
 })
+
+test('local authentication temporarily blocks repeated failures', async () => {
+  const service = new InMemoryIdentityService()
+  await service.registerLocalUser({
+    id: 'user-rate-limit',
+    username: 'rate-limit',
+    password: 'correct horse battery staple',
+    displayName: 'Rate Limit',
+  })
+
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const result = await service.login({ username: 'rate-limit', password: 'wrong password' })
+    assert.equal(result.isErr, true)
+  }
+
+  const blocked = await service.login({
+    username: 'rate-limit',
+    password: 'correct horse battery staple',
+  })
+  assert.equal(blocked.isErr, true)
+})

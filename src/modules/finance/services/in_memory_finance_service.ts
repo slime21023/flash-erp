@@ -1,6 +1,5 @@
 import {
   FinanceContract,
-  JournalEntryAlreadyPostedError,
   JournalEntryPersistenceError,
   FinanceQueryError,
   JournalEntry,
@@ -23,18 +22,6 @@ export class InMemoryFinanceService extends FinanceContract {
     string,
     { input: CreateJournalEntryDraftInput; status: 'DRAFT' | 'POSTED'; entry: JournalEntry }
   >()
-
-  async post(
-    entry: JournalEntry,
-    _options?: TransactionOptions
-  ): Promise<Result<JournalEntry, JournalEntryAlreadyPostedError>> {
-    if (this.#postedEntries.has(entry.id)) {
-      return err(new JournalEntryAlreadyPostedError(entry.id))
-    }
-
-    this.#postedEntries.set(entry.id, entry)
-    return ok(entry)
-  }
 
   async createDraft(
     input: CreateJournalEntryDraftInput,

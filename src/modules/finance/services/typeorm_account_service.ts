@@ -4,6 +4,8 @@ import { Repository } from 'typeorm'
 import { err, ok } from '@platform/fp/index.js'
 import type { Result } from '@platform/fp/index.js'
 import type { TransactionOptions } from '@platform/persistence/index.js'
+import { scopeMismatch } from '@platform/context/index.js'
+import { ScopeForbiddenError } from '@platform/security/index.js'
 import {
   AccountAlreadyExistsError,
   AccountContract,
@@ -26,7 +28,9 @@ export class TypeOrmAccountService extends AccountContract {
   async create(
     input: CreateAccountInput,
     options?: TransactionOptions
-  ): Promise<Result<AccountSnapshot, InvalidAccountError | AccountAlreadyExistsError>> {
+  ): Promise<
+    Result<AccountSnapshot, InvalidAccountError | AccountAlreadyExistsError | ScopeForbiddenError>
+  > {
     const id = input.id.trim()
     const companyId = input.companyId.trim()
     const code = input.code.trim().toUpperCase()
@@ -35,6 +39,9 @@ export class TypeOrmAccountService extends AccountContract {
     if (!id || !companyId || !code || !name) {
       return err(new InvalidAccountError('id, companyId, code, and name are required'))
     }
+
+    const selectedScope = scopeMismatch(companyId, options)
+    if (selectedScope) return err(new ScopeForbiddenError(selectedScope, 'account'))
 
     const manager = options?.client ?? this.repo.manager
 
@@ -70,16 +77,24 @@ export class TypeOrmAccountService extends AccountContract {
   async find(
     id: string,
     options?: TransactionOptions
-  ): Promise<Result<AccountSnapshot, AccountNotFoundError>> {
+  ): Promise<Result<AccountSnapshot, AccountNotFoundError | ScopeForbiddenError>> {
     const manager = options?.client ?? this.repo.manager
     const account = await manager.findOne(AccountEntity, { where: { id } })
-    return account ? ok(TypeOrmAccountService.snapshot(account)) : err(new AccountNotFoundError(id))
+    if (!account) return err(new AccountNotFoundError(id))
+    const selectedScope = scopeMismatch(account.companyId, options)
+    if (selectedScope) return err(new ScopeForbiddenError(selectedScope, 'account'))
+    return ok(TypeOrmAccountService.snapshot(account))
   }
 
   async ensureActive(
     ids: readonly string[],
     options?: TransactionOptions
-  ): Promise<Result<readonly AccountSnapshot[], AccountNotFoundError | InactiveAccountError>> {
+  ): Promise<
+    Result<
+      readonly AccountSnapshot[],
+      AccountNotFoundError | InactiveAccountError | ScopeForbiddenError
+    >
+  > {
     const manager = options?.client ?? this.repo.manager
     const uniqueIds = [...new Set(ids)]
     const accounts = await manager
@@ -91,6 +106,8 @@ export class TypeOrmAccountService extends AccountContract {
     for (const id of ids) {
       const acc = byId.get(id)
       if (!acc) return err(new AccountNotFoundError(id))
+      const selectedScope = scopeMismatch(acc.companyId, options)
+      if (selectedScope) return err(new ScopeForbiddenError(selectedScope, 'account'))
       if (!acc.isActive) return err(new InactiveAccountError(id))
     }
 

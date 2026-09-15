@@ -37,15 +37,6 @@ export class SettlementEngine {
    * 3. originalBalance - applied == newRemainingBalance
    * 4. Total allocated == min(totalAvailable, sum(originalBalances))
    */
-  static allocateSettlement(
-    totalAvailableMinorUnits: bigint,
-    documents: readonly SettlableDocument[]
-  ): SettlementResult {
-    const result = SettlementEngine.tryAllocateSettlement(totalAvailableMinorUnits, documents)
-    if (result.isErr) throw new Error(result.error.message)
-    return result.value
-  }
-
   private static calculate(
     totalAvailableMinorUnits: bigint,
     documents: readonly SettlableDocument[]

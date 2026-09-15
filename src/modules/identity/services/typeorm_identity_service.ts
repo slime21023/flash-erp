@@ -27,13 +27,17 @@ import { hashPassword, verifyPassword } from './password.js'
 
 @Injectable()
 export class TypeOrmIdentityService extends IdentityContract {
+  private readonly failedLogins = new Map<string, { count: number; blockedUntil: number }>()
+
   constructor(
     @InjectRepository(LocalUserEntity)
     private readonly userRepo: Repository<LocalUserEntity>,
     @InjectRepository(AuthSessionEntity)
     private readonly sessionRepo: Repository<AuthSessionEntity>,
     @InjectRepository(UserRoleEntity)
-    private readonly userRoleRepo: Repository<UserRoleEntity>
+    private readonly userRoleRepo: Repository<UserRoleEntity>,
+    @InjectRepository(UserOrganizationScopeEntity)
+    private readonly userScopeRepo: Repository<UserOrganizationScopeEntity>
   ) {
     super()
   }
@@ -55,8 +59,8 @@ export class TypeOrmIdentityService extends IdentityContract {
       )
     }
 
-    if (password && password.length < 8) {
-      return err(new InvalidIdentityInputError('password must contain at least 8 characters'))
+    if (password && password.length < 12) {
+      return err(new InvalidIdentityInputError('password must contain at least 12 characters'))
     }
 
     let passwordHash = legacyPasswordHash
@@ -107,10 +111,25 @@ export class TypeOrmIdentityService extends IdentityContract {
     const password = typeof credentials?.password === 'string' ? credentials.password : ''
     if (!username || !password) return err(new AuthenticationFailedError())
 
+    const failure = this.failedLogins.get(username)
+    if (failure && failure.blockedUntil > Date.now()) return err(new AuthenticationFailedError())
+    if (failure && failure.blockedUntil > 0 && failure.blockedUntil <= Date.now()) {
+      this.failedLogins.delete(username)
+    }
+
+    // Reserve the attempt before any await so concurrent requests cannot all observe the same count.
+    const attemptCount = (this.failedLogins.get(username)?.count ?? 0) + 1
+    this.failedLogins.set(username, {
+      count: attemptCount,
+      blockedUntil: attemptCount >= 5 ? Date.now() + 15 * 60 * 1000 : 0,
+    })
+
     const user = await this.userRepo.findOneBy({ username })
     if (!user || !user.isActive || !(await verifyPassword(password, user.passwordHash))) {
       return err(new AuthenticationFailedError())
     }
+
+    this.failedLogins.delete(username)
 
     const accessToken = randomBytes(32).toString('base64url')
     const expiresAt = new Date(Date.now() + 8 * 60 * 60 * 1000)
@@ -177,16 +196,17 @@ export class TypeOrmIdentityService extends IdentityContract {
   }
 
   private async principal(user: LocalUserEntity): Promise<AuthenticatedPrincipal> {
-    const assignments = await this.userRoleRepo.find({
-      where: { userId: user.id },
-      relations: ['role'],
-    })
+    const [assignments, scopes] = await Promise.all([
+      this.userRoleRepo.find({ where: { userId: user.id }, relations: ['role'] }),
+      this.userScopeRepo.find({ where: { userId: user.id } }),
+    ])
     return {
       id: user.id,
       username: user.username,
       displayName: user.displayName,
       isActive: user.isActive,
       roles: assignments.map((assignment) => assignment.role?.code ?? assignment.roleId),
+      organizationUnitIds: scopes.map((scope) => scope.organizationUnitId),
     }
   }
 }

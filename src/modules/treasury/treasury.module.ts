@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common'
 import { TypeOrmModule } from '@nestjs/typeorm'
 import { FinanceModule } from '@modules/finance/finance.module.js'
+import { SalesModule } from '@modules/sales/sales.module.js'
 import { TreasuryContract } from './contracts/index.js'
 import { BankAccountEntity } from './entities/bank_account.entity.js'
 import { PaymentVoucherEntity } from './entities/payment_voucher.entity.js'
@@ -24,6 +25,7 @@ import { TreasuryController } from './controllers/treasury.controller.js'
       BankStatementLineEntity,
     ]),
     FinanceModule,
+    SalesModule,
   ],
   controllers: [TreasuryController],
   providers: [

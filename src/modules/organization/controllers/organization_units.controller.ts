@@ -16,6 +16,7 @@ export class OrganizationUnitsController {
     return ResultPresenter.handle(res, result, { successStatus: 201 })
   }
 
+  @RequirePermission('organization.unit.read')
   @Get(':id')
   async find(@Param('id') id: string, @Res() res: Response) {
     const result = await this.organization.findUnit(id)

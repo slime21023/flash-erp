@@ -25,7 +25,8 @@ export class ThreeWayMatcher {
     poLines: readonly PurchaseOrderLineInput[],
     receiptLines: readonly { itemId: string; receivedQuantity: bigint }[],
     invoice: VendorInvoiceSnapshot,
-    tolerance: ThreeWayMatchToleranceOptions = {}
+    tolerance: ThreeWayMatchToleranceOptions = {},
+    previouslyInvoicedByItem: ReadonlyMap<string, bigint> = new Map()
   ): Result<MatchResultSnapshot, MatchingToleranceExceededError> {
     const qtyTolBps = BigInt(tolerance.quantityToleranceBasisPoints ?? 0)
     const priceTolBps = BigInt(tolerance.priceToleranceBasisPoints ?? 0)
@@ -63,11 +64,28 @@ export class ThreeWayMatcher {
       }
 
       const receivedQty = receivedByItem.get(invLine.itemId) ?? 0n
+      const previouslyInvoicedQty = previouslyInvoicedByItem.get(invLine.itemId) ?? 0n
+      const availableReceivedQty = receivedQty - previouslyInvoicedQty
+      if (availableReceivedQty < 0n) {
+        return err(
+          new MatchingToleranceExceededError({
+            invoiceId: invoice.id,
+            itemId: invLine.itemId,
+            field: 'QUANTITY',
+            expected: '0',
+            actual: previouslyInvoicedQty.toString(),
+            tolerance: '0',
+            message: `Previously invoiced quantity exceeds received quantity for item ${invLine.itemId}`,
+          })
+        )
+      }
       totalReceivedMinorUnits += receivedQty * poLine.unitCostMinorUnits
 
       // 1. Quantity verification with tolerance
       const maxAllowedQty =
-        qtyTolBps > 0n ? receivedQty + (receivedQty * qtyTolBps) / 10000n : receivedQty
+        qtyTolBps > 0n
+          ? availableReceivedQty + (availableReceivedQty * qtyTolBps) / 10000n
+          : availableReceivedQty
 
       if (invLine.invoicedQuantity > maxAllowedQty) {
         return err(
@@ -75,10 +93,10 @@ export class ThreeWayMatcher {
             invoiceId: invoice.id,
             itemId: invLine.itemId,
             field: 'QUANTITY',
-            expected: receivedQty.toString(),
+            expected: availableReceivedQty.toString(),
             actual: invLine.invoicedQuantity.toString(),
             tolerance: `${tolerance.quantityToleranceBasisPoints ?? 0} bps`,
-            message: `Invoiced quantity ${invLine.invoicedQuantity} exceeds received quantity ${receivedQty} (allowed up to ${maxAllowedQty})`,
+            message: `Invoiced quantity ${invLine.invoicedQuantity} exceeds unbilled received quantity ${availableReceivedQty} (allowed up to ${maxAllowedQty})`,
           })
         )
       }
@@ -119,13 +137,13 @@ export class ThreeWayMatcher {
         )
       }
 
-      const qtyDiff = invLine.invoicedQuantity - receivedQty
+      const qtyDiff = invLine.invoicedQuantity - availableReceivedQty
       const priceDiff = invLine.unitPriceMinorUnits - poLine.unitCostMinorUnits
 
       lineMatches.push({
         itemId: invLine.itemId,
         poQuantity: poLine.orderedQuantity,
-        receivedQuantity: receivedQty,
+        receivedQuantity: availableReceivedQty,
         invoicedQuantity: invLine.invoicedQuantity,
         poUnitPriceMinorUnits: poLine.unitCostMinorUnits,
         invoiceUnitPriceMinorUnits: invLine.unitPriceMinorUnits,

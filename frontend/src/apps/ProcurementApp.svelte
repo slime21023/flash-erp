@@ -1,87 +1,85 @@
 <script lang="ts">
-  import Statusbar from '../lib/components/Statusbar.svelte'
+  import { ApiError, apiRequest, readAuthSession } from '../lib/api.js'
 
-  let currentStage = $state<'DRAFT' | 'APPROVED' | 'RECEIVED' | 'MATCHED'>('DRAFT')
-  let notification = $state<string | null>(null)
-
-  const stages = [
-    { id: 'DRAFT', label: '請購審核 (PR Draft)' },
-    { id: 'APPROVED', label: '採購下單 (PO Approved)' },
-    { id: 'RECEIVED', label: '驗收入庫 (GR Received)' },
-    { id: 'MATCHED', label: '三向匹配過帳 (AP Matched)' },
-  ]
-
-  function approvePo() {
-    currentStage = 'APPROVED'
-    notification = '採購訂單已核准！向供應商發出正式採購委託。'
+  type PurchaseOrder = {
+    id: string
+    companyId: string
+    supplierId: string
+    number: string
+    status: 'DRAFT' | 'APPROVED' | 'CLOSED' | 'VOID'
+    lines: { itemId: string; orderedQuantity: string; unitCostMinorUnits: string; currency: string }[]
   }
 
-  function receiveGoods() {
-    currentStage = 'RECEIVED'
-    notification = '收貨入庫成功！已透過 InventoryContract.recordMovement 登記庫存入庫並記錄批次。'
+  const session = readAuthSession()
+  let companyId = $state(session?.user.organizationUnitIds[0] ?? '')
+  let supplierId = $state('')
+  let supplierCode = $state('')
+  let supplierName = $state('')
+  let purchaseOrderId = $state('')
+  let purchaseOrderNumber = $state('')
+  let itemId = $state('')
+  let orderedQuantity = $state('1')
+  let unitCostMinorUnits = $state('0')
+  let currency = $state('TWD')
+  let receiptId = $state('')
+  let warehouseId = $state('')
+  let purchaseOrder = $state<PurchaseOrder | null>(null)
+  let message = $state<string | null>(null)
+  let busy = $state(false)
+
+  function errorMessage(error: unknown) { return error instanceof ApiError || error instanceof Error ? error.message : '操作失敗' }
+  async function run(action: () => Promise<void>) { busy = true; message = null; try { await action() } catch (error) { message = errorMessage(error) } finally { busy = false } }
+
+  async function createSupplier() {
+    await run(async () => {
+      supplierId = supplierId || `supplier-${crypto.randomUUID()}`
+      const supplier = await apiRequest<{ id: string }>('/procurement/suppliers', { method: 'POST', body: { id: supplierId, companyId, code: supplierCode, name: supplierName } })
+      supplierId = supplier.id
+      message = `供應商 ${supplier.id} 已建立。`
+    })
   }
 
-  function matchInvoice() {
-    currentStage = 'MATCHED'
-    notification = '三向匹配成功（PO vs GR vs Invoice 容差通過）！自動生成應付憑單 (AP Voucher) 及借記存貨/貸記應付帳款傳票。'
+  async function createPurchaseOrder() {
+    await run(async () => {
+      purchaseOrderId = purchaseOrderId || `po-${crypto.randomUUID()}`
+      purchaseOrderNumber = purchaseOrderNumber || `PO-${Date.now()}`
+      purchaseOrder = await apiRequest<PurchaseOrder>('/procurement/purchase-orders', { method: 'POST', body: { id: purchaseOrderId, companyId, supplierId, number: purchaseOrderNumber, lines: [{ itemId, orderedQuantity, unitCostMinorUnits, currency }] } })
+      message = `採購單 ${purchaseOrder.number} 已建立。`
+    })
   }
 
-  function reset() {
-    currentStage = 'DRAFT'
-    notification = null
+  async function approvePurchaseOrder() {
+    const current = purchaseOrder
+    if (!current) return
+    await run(async () => {
+      const updated = await apiRequest<PurchaseOrder>(`/procurement/purchase-orders/${encodeURIComponent(current.id)}/approve`, { method: 'POST' })
+      purchaseOrder = updated
+      message = `採購單 ${updated.number} 已核准。`
+    })
+  }
+
+  async function receiveGoods() {
+    const current = purchaseOrder
+    if (!current) return
+    await run(async () => {
+      const receipt = await apiRequest<{ id: string }>('/procurement/goods-receipts', { method: 'POST', body: { id: receiptId || `gr-${crypto.randomUUID()}`, purchaseOrderId: current.id, warehouseId, receivedAt: new Date().toISOString(), lines: [{ itemId, receivedQuantity: orderedQuantity }] } })
+      receiptId = receipt.id
+      message = `收貨單 ${receipt.id} 已建立，庫存異動已交由後端處理。`
+    })
   }
 </script>
 
 <div class="max-w-7xl mx-auto p-6 space-y-6">
-  <Statusbar
-    {stages}
-    {currentStage}
-    actions={[
-      ...(currentStage === 'DRAFT'
-        ? [{ id: 'approve', label: '核准採購單 (Approve PO)', primary: true, onClick: approvePo }]
-        : []),
-      ...(currentStage === 'APPROVED'
-        ? [{ id: 'receive', label: '收貨驗收入庫 (Receive Goods)', primary: true, onClick: receiveGoods }]
-        : []),
-      ...(currentStage === 'RECEIVED'
-        ? [{ id: 'match', label: '執行發票三向匹配 (3-Way Match)', primary: true, onClick: matchInvoice }]
-        : []),
-      { id: 'reset', label: '重設示範', onClick: reset },
-    ]}
-  />
+  <div><span class="label">採購管理 (Procurement)</span><h2 class="title">供應商、採購與收貨</h2><p class="hint">操作結果來自 ProcurementContract 與 InventoryContract。</p></div>
+  {#if message}<div class="message" role="status">{message}</div>{/if}
 
-  {#if notification}
-    <div class="p-3.5 rounded-lg bg-teal-50 border border-teal-200 text-teal-900 text-xs flex items-center justify-between animate-in fade-in">
-      <span>🛒 {notification}</span>
-      <button onclick={() => notification = null} class="text-teal-500 hover:text-teal-700 font-bold ml-2">×</button>
-    </div>
-  {/if}
+  <section class="panel"><h3>供應商</h3><div class="grid"><label>ID<input bind:value={supplierId} placeholder="留白自動產生" /></label><label>公司 ID<input bind:value={companyId} /></label><label>代碼<input bind:value={supplierCode} /></label><label>名稱<input bind:value={supplierName} /></label><button onclick={createSupplier} disabled={busy}>建立供應商</button></div></section>
 
-  <div class="bg-white rounded-xl border border-slate-200 shadow-xs p-6 space-y-6">
-    <div class="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 pb-4 border-b border-slate-100">
-      <div>
-        <span class="text-[10px] font-bold text-teal-600 uppercase tracking-wider">採購訂單與三向匹配 (P2P)</span>
-        <h2 class="text-xl font-extrabold text-slate-900">PO-2026-0042 • 供應商：聯發科技</h2>
-      </div>
-      <div class="text-right">
-        <span class="text-xs text-slate-400">採購單總金額 (Total)</span>
-        <p class="text-2xl font-black text-slate-900">NT$ 945,000</p>
-      </div>
-    </div>
-
-    <div class="grid grid-cols-1 md:grid-cols-3 gap-6 text-xs">
-      <div>
-        <span class="text-slate-500 font-medium">採購人員 (Purchaser):</span>
-        <p class="font-semibold text-slate-900">林經理 (採購部)</p>
-      </div>
-      <div>
-        <span class="text-slate-500 font-medium">預定交貨倉庫 (Warehouse):</span>
-        <p class="font-semibold text-slate-900">WH-MAIN (主營運倉庫)</p>
-      </div>
-      <div>
-        <span class="text-slate-500 font-medium">三向匹配容差政策 (Tolerance):</span>
-        <p class="font-semibold text-teal-700">數量 0% / 單價 ±1% 內自動允收</p>
-      </div>
-    </div>
-  </div>
+  <section class="panel"><h3>採購單</h3><div class="grid"><label>採購單 ID<input bind:value={purchaseOrderId} placeholder="留白自動產生" /></label><label>採購單號<input bind:value={purchaseOrderNumber} placeholder="留白自動產生" /></label><label>供應商 ID<input bind:value={supplierId} /></label><label>料品 ID<input bind:value={itemId} /></label><label>數量<input bind:value={orderedQuantity} inputmode="numeric" /></label><label>單位成本<input bind:value={unitCostMinorUnits} inputmode="numeric" /></label><label>幣別<input bind:value={currency} maxlength="3" /></label><button onclick={createPurchaseOrder} disabled={busy}>建立採購單</button></div>
+    {#if purchaseOrder}<div class="result"><strong>{purchaseOrder.number}</strong><span>{purchaseOrder.status}</span><span>{purchaseOrder.id}</span></div><div class="actions"><button onclick={approvePurchaseOrder} disabled={busy || purchaseOrder.status !== 'DRAFT'}>核准採購單</button><label>收貨倉庫 ID<input bind:value={warehouseId} /></label><label>收貨單 ID<input bind:value={receiptId} placeholder="留白自動產生" /></label><button onclick={receiveGoods} disabled={busy || purchaseOrder.status !== 'APPROVED'}>建立收貨</button></div>{/if}
+  </section>
 </div>
+
+<style>
+  .label { font-size: .625rem; font-weight: 700; color: #7c2d12; text-transform: uppercase; letter-spacing: .08em; } .title { margin-top: .25rem; font-size: 1.25rem; font-weight: 800; } .hint { margin-top: .25rem; color: #64748b; font-size: .75rem; } .panel { display: grid; gap: 1rem; background: white; border: 1px solid #e2e8f0; border-radius: .75rem; padding: 1.25rem; } h3 { font-size: .875rem; font-weight: 700; } .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr)); gap: .75rem; font-size: .75rem; } label { display: grid; gap: .25rem; color: #475569; } input { width: 100%; border: 1px solid #cbd5e1; border-radius: .5rem; padding: .5rem .625rem; } button { align-self: end; border-radius: .5rem; background: #ea580c; color: white; padding: .5rem .75rem; font-size: .75rem; font-weight: 700; } button:disabled { opacity: .5; } .message { border: 1px solid #fed7aa; border-radius: .5rem; background: #fff7ed; padding: .75rem; color: #9a3412; font-size: .75rem; } .result, .actions { display: flex; flex-wrap: wrap; align-items: end; gap: .75rem; border-top: 1px solid #f1f5f9; padding-top: .75rem; font-size: .75rem; } .result span { color: #64748b; font-family: monospace; }
+</style>

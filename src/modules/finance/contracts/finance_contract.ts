@@ -1,6 +1,7 @@
 import type { Result } from '@platform/fp/index.js'
 import type { TransactionOptions } from '@platform/persistence/index.js'
-import type { JournalEntry, JournalLine } from './journal_entry.js'
+import type { ScopeForbiddenError } from '@platform/security/index.js'
+import type { JournalLine } from './journal_entry.js'
 import type {
   AccountingPeriodError,
   FinanceQueryError,
@@ -64,15 +65,10 @@ export type FinanceWriteContext = Readonly<{
 }>
 
 export abstract class FinanceContract {
-  abstract post(
-    entry: JournalEntry,
-    options?: TransactionOptions
-  ): Promise<Result<JournalEntry, JournalEntryAlreadyPostedError>>
-
   abstract createDraft(
     input: CreateJournalEntryDraftInput,
     options?: TransactionOptions
-  ): Promise<Result<JournalEntryDraftSnapshot, JournalEntryPersistenceError>>
+  ): Promise<Result<JournalEntryDraftSnapshot, JournalEntryPersistenceError | ScopeForbiddenError>>
 
   abstract postDraft(
     entryId: string,
@@ -86,6 +82,7 @@ export abstract class FinanceContract {
       | AccountingPeriodError
       | InactiveAccountError
       | JournalEntryPersistenceError
+      | ScopeForbiddenError
     >
   >
 
@@ -94,14 +91,14 @@ export abstract class FinanceContract {
     from: string,
     to: string,
     options?: TransactionOptions
-  ): Promise<Result<readonly LedgerLineSnapshot[], FinanceQueryError>>
+  ): Promise<Result<readonly LedgerLineSnapshot[], FinanceQueryError | ScopeForbiddenError>>
 
   abstract trialBalance(
     companyId: string,
     from: string,
     to: string,
     options?: TransactionOptions
-  ): Promise<Result<readonly TrialBalanceLine[], FinanceQueryError>>
+  ): Promise<Result<readonly TrialBalanceLine[], FinanceQueryError | ScopeForbiddenError>>
 
   abstract reverse(
     entryId: string,
@@ -116,6 +113,7 @@ export abstract class FinanceContract {
       | JournalEntryAlreadyReversedError
       | AccountingPeriodError
       | JournalEntryPersistenceError
+      | ScopeForbiddenError
     >
   >
 }

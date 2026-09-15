@@ -1,5 +1,6 @@
 import type { Result } from '@platform/fp/index.js'
 import type { TransactionOptions } from '@platform/persistence/index.js'
+import type { ScopeForbiddenError } from '@platform/security/index.js'
 import type { InsufficientStockError } from '@modules/inventory/contracts/index.js'
 import type {
   AccountsReceivablePostingError,
@@ -37,6 +38,14 @@ export type CustomerCreditCheckResult = Readonly<{
   totalExposureMinorUnits: bigint
   isApproved: boolean
   excessMinorUnits: bigint
+}>
+
+export type SettleCustomerReceivableInput = Readonly<{
+  companyId: string
+  customerId: string
+  amountMinorUnits: bigint
+  currency: string
+  referenceId: string
 }>
 
 export type SalesOrderLineInput = Readonly<{
@@ -123,28 +132,35 @@ export abstract class SalesContract {
   abstract registerCustomer(
     input: RegisterCustomerInput,
     options?: TransactionOptions
-  ): Promise<Result<CustomerSnapshot, SalesError | CustomerAlreadyExistsError>>
+  ): Promise<
+    Result<CustomerSnapshot, SalesError | CustomerAlreadyExistsError | ScopeForbiddenError>
+  >
 
   abstract getCustomer(
     id: string,
     options?: TransactionOptions
-  ): Promise<Result<CustomerSnapshot, CustomerNotFoundError>>
+  ): Promise<Result<CustomerSnapshot, CustomerNotFoundError | ScopeForbiddenError>>
 
   abstract checkCustomerCredit(
     customerId: string,
     additionalOrderAmountMinorUnits?: bigint,
     options?: TransactionOptions
-  ): Promise<Result<CustomerCreditCheckResult, CustomerNotFoundError>>
+  ): Promise<Result<CustomerCreditCheckResult, CustomerNotFoundError | ScopeForbiddenError>>
+
+  abstract settleCustomerReceivable(
+    input: SettleCustomerReceivableInput,
+    options?: TransactionOptions
+  ): Promise<Result<CustomerSnapshot, CustomerNotFoundError | SalesError | ScopeForbiddenError>>
 
   abstract createSalesOrder(
     input: CreateSalesOrderInput,
     options?: TransactionOptions
-  ): Promise<Result<SalesOrderSnapshot, SalesError | CustomerNotFoundError>>
+  ): Promise<Result<SalesOrderSnapshot, SalesError | CustomerNotFoundError | ScopeForbiddenError>>
 
   abstract getSalesOrder(
     id: string,
     options?: TransactionOptions
-  ): Promise<Result<SalesOrderSnapshot, SalesOrderNotFoundError>>
+  ): Promise<Result<SalesOrderSnapshot, SalesOrderNotFoundError | ScopeForbiddenError>>
 
   abstract confirmSalesOrder(
     id: string,
@@ -158,6 +174,7 @@ export abstract class SalesContract {
       | CreditLimitExceededError
       | InsufficientStockError
       | SalesError
+      | ScopeForbiddenError
     >
   >
 
@@ -171,6 +188,7 @@ export abstract class SalesContract {
       | InvalidSalesOrderStateError
       | ShipmentError
       | AccountsReceivablePostingError
+      | ScopeForbiddenError
     >
   >
 }

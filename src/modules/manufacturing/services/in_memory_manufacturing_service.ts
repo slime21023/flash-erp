@@ -1,6 +1,7 @@
 import { err, ok } from '@platform/fp/index.js'
 import type { Result } from '@platform/fp/index.js'
 import type { TransactionOptions } from '@platform/persistence/index.js'
+import { createHash, randomUUID } from 'node:crypto'
 import { Money } from '@platform/kernel/index.js'
 import type { InventoryContract } from '@modules/inventory/contracts/index.js'
 import type { FinanceContract, JournalLine } from '@modules/finance/contracts/index.js'
@@ -33,6 +34,11 @@ import {
 import { BomExplosionEngine } from './bom_explosion_engine.js'
 import { OverheadAllocationEngine } from './overhead_allocation_engine.js'
 
+function stableReference(prefix: string, ...parts: string[]): string {
+  const digest = createHash('sha256').update(parts.join('\0')).digest('hex')
+  return `${prefix}-${digest.slice(0, 48)}`
+}
+
 export class InMemoryManufacturingService extends ManufacturingContract {
   readonly #boms = new Map<string, BomSnapshot>()
   readonly #workOrders = new Map<string, WorkOrderSnapshot>()
@@ -47,7 +53,7 @@ export class InMemoryManufacturingService extends ManufacturingContract {
 
   async registerBom(
     input: RegisterBomInput,
-    _options?: TransactionOptions
+    options?: TransactionOptions
   ): Promise<
     Result<BomSnapshot, ManufacturingError | BomAlreadyExistsError | CyclicBomDependencyError>
   > {
@@ -70,19 +76,46 @@ export class InMemoryManufacturingService extends ManufacturingContract {
       return err(new BomAlreadyExistsError(code))
     }
 
-    // Direct cycle check
-    if (input.lines.some((l) => l.componentItemId === parentItemId)) {
-      return err(new CyclicBomDependencyError(parentItemId, parentItemId))
+    if (input.lines.length === 0 || (input.baseQuantity ?? 1n) <= 0n) {
+      return err(new ManufacturingError('BOM base quantity and lines are required'))
     }
 
-    const lines: BomLineSnapshot[] = input.lines.map((l) =>
-      Object.freeze({
-        componentItemId: l.componentItemId,
-        quantityPerBase: l.quantityPerBase,
-        scrapPercentageBasisPoints: l.scrapPercentageBasisPoints ?? 0,
-        memo: l.memo,
-      })
-    )
+    const lineIds = new Set<string>()
+    const lines: BomLineSnapshot[] = []
+    for (const line of input.lines) {
+      const componentItemId = line.componentItemId.trim()
+      const scrapPercentageBasisPoints = line.scrapPercentageBasisPoints ?? 0
+      if (
+        !componentItemId ||
+        lineIds.has(componentItemId) ||
+        line.quantityPerBase <= 0n ||
+        !Number.isInteger(scrapPercentageBasisPoints) ||
+        scrapPercentageBasisPoints < 0 ||
+        scrapPercentageBasisPoints > 10_000
+      ) {
+        return err(new ManufacturingError('BOM lines must be unique, positive, and valid'))
+      }
+      if (componentItemId === parentItemId) {
+        return err(new CyclicBomDependencyError(parentItemId, parentItemId))
+      }
+      if (this.inventory) {
+        const itemRes = await this.inventory.findItem(companyId, componentItemId, options)
+        if (itemRes.isErr) return err(new ManufacturingError(itemRes.error.message))
+      }
+      lineIds.add(componentItemId)
+      lines.push(
+        Object.freeze({
+          componentItemId,
+          quantityPerBase: line.quantityPerBase,
+          scrapPercentageBasisPoints,
+          memo: line.memo,
+        })
+      )
+    }
+    if (this.inventory) {
+      const itemRes = await this.inventory.findItem(companyId, parentItemId, options)
+      if (itemRes.isErr) return err(new ManufacturingError(itemRes.error.message))
+    }
 
     const bom: BomSnapshot = Object.freeze({
       id,
@@ -111,14 +144,23 @@ export class InMemoryManufacturingService extends ManufacturingContract {
 
   async createWorkOrder(
     input: CreateWorkOrderInput,
-    _options?: TransactionOptions
+    options?: TransactionOptions
   ): Promise<Result<WorkOrderSnapshot, ManufacturingError | BomNotFoundError>> {
     const id = input.id.trim()
     const companyId = input.companyId.trim()
     const workOrderNumber = input.workOrderNumber.trim()
     const bomId = input.bomId.trim()
+    const outputWarehouseId = input.outputWarehouseId.trim()
+    const rawMaterialWarehouseId = input.rawMaterialWarehouseId.trim()
 
-    if (!id || !companyId || !workOrderNumber || !bomId) {
+    if (
+      !id ||
+      !companyId ||
+      !workOrderNumber ||
+      !bomId ||
+      !outputWarehouseId ||
+      !rawMaterialWarehouseId
+    ) {
       return err(new ManufacturingError('Work order id, companyId, number, and bomId are required'))
     }
 
@@ -126,9 +168,39 @@ export class InMemoryManufacturingService extends ManufacturingContract {
       return err(new ManufacturingError('Target quantity must be greater than zero'))
     }
 
+    if (
+      this.#workOrders.has(id) ||
+      [...this.#workOrders.values()].some(
+        (workOrder) =>
+          workOrder.companyId === companyId && workOrder.workOrderNumber === workOrderNumber
+      )
+    ) {
+      return err(new ManufacturingError(`Work order already exists: ${id}`))
+    }
+
     const bom = this.#boms.get(bomId)
     if (!bom) {
       return err(new BomNotFoundError(bomId))
+    }
+
+    if (this.inventory) {
+      const outputWarehouseRes = await this.inventory.findWarehouse(
+        companyId,
+        outputWarehouseId,
+        options
+      )
+      const rawWarehouseRes = await this.inventory.findWarehouse(
+        companyId,
+        rawMaterialWarehouseId,
+        options
+      )
+      if (outputWarehouseRes.isErr || rawWarehouseRes.isErr) {
+        return err(
+          new ManufacturingError('Work order warehouses must be active in the same company')
+        )
+      }
+      const outputItemRes = await this.inventory.findItem(companyId, bom.parentItemId, options)
+      if (outputItemRes.isErr) return err(new ManufacturingError(outputItemRes.error.message))
     }
 
     const explodedResult = BomExplosionEngine.tryExplode({
@@ -143,7 +215,7 @@ export class InMemoryManufacturingService extends ManufacturingContract {
       Object.freeze({
         id: `${id}-line-${idx}`,
         componentItemId: item.componentItemId,
-        warehouseId: input.rawMaterialWarehouseId,
+        warehouseId: rawMaterialWarehouseId,
         plannedQuantity: item.plannedQuantity,
         issuedQuantity: 0n,
       })
@@ -155,8 +227,8 @@ export class InMemoryManufacturingService extends ManufacturingContract {
       workOrderNumber,
       bomId,
       outputItemId: bom.parentItemId,
-      outputWarehouseId: input.outputWarehouseId,
-      rawMaterialWarehouseId: input.rawMaterialWarehouseId,
+      outputWarehouseId,
+      rawMaterialWarehouseId,
       targetQuantity: input.targetQuantity,
       completedQuantity: 0n,
       status: 'DRAFT',
@@ -231,13 +303,35 @@ export class InMemoryManufacturingService extends ManufacturingContract {
       return err(new InvalidWorkOrderStateError(wo.status, 'issue materials'))
     }
 
+    if (input.lines.length === 0) {
+      return err(new ManufacturingError('At least one material issue line is required'))
+    }
+
+    const issueItemIds = new Set<string>()
+    for (const line of input.lines) {
+      const itemId = line.componentItemId.trim()
+      if (!itemId || line.quantity <= 0n || issueItemIds.has(itemId)) {
+        return err(new ManufacturingError('Material issue lines must be unique and positive'))
+      }
+      issueItemIds.add(itemId)
+    }
+
+    const issueReference = stableReference(
+      'issue',
+      wo.id,
+      input.issueDate.trim(),
+      ...input.lines.map((line) => `${line.componentItemId.trim()}:${line.quantity}`)
+    )
+
     let additionalCost = 0n
     const linesMap = new Map(wo.lines.map((l) => [l.componentItemId, l]))
+    let financeCurrency: string | null = null
 
     for (const req of input.lines) {
-      const woLine = linesMap.get(req.componentItemId)
+      const componentItemId = req.componentItemId.trim()
+      const woLine = linesMap.get(componentItemId)
       if (!woLine) {
-        return err(new ManufacturingError(`Item ${req.componentItemId} is not in work order`))
+        return err(new ManufacturingError(`Item ${componentItemId} is not in work order`))
       }
 
       if (woLine.issuedQuantity + req.quantity > woLine.plannedQuantity) {
@@ -256,7 +350,7 @@ export class InMemoryManufacturingService extends ManufacturingContract {
       if (this.inventory) {
         const stockRes = await this.inventory.stock(
           wo.companyId,
-          req.componentItemId,
+          componentItemId,
           woLine.warehouseId,
           options
         )
@@ -266,15 +360,19 @@ export class InMemoryManufacturingService extends ManufacturingContract {
 
         unitCost = stockRes.value.averageUnitCostMinorUnits
         currency = stockRes.value.currency || 'TWD'
+        if (financeCurrency && financeCurrency !== currency) {
+          return err(new ManufacturingError('Material issue lines cannot mix currencies'))
+        }
+        financeCurrency = currency
 
         const movRes = await this.inventory.recordMovement(
           {
-            id: `mov-issue-${wo.id}-${req.componentItemId}-${Date.now()}`,
+            id: stableReference('mov', issueReference, componentItemId),
             companyId: wo.companyId,
-            itemId: req.componentItemId,
+            itemId: componentItemId,
             warehouseId: woLine.warehouseId,
             sourceType: 'WORK_ORDER_ISSUE',
-            sourceId: wo.id,
+            sourceId: issueReference,
             quantityDelta: -req.quantity,
             unitCostMinorUnits: unitCost,
             currency,
@@ -291,7 +389,7 @@ export class InMemoryManufacturingService extends ManufacturingContract {
       additionalCost += lineCost
 
       linesMap.set(
-        req.componentItemId,
+        componentItemId,
         Object.freeze({
           ...woLine,
           issuedQuantity: woLine.issuedQuantity + req.quantity,
@@ -316,8 +414,9 @@ export class InMemoryManufacturingService extends ManufacturingContract {
 
     // Finance WIP entry
     if (this.finance && additionalCost > 0n) {
-      const zeroRes = Money.zero('TWD')
-      const costRes = Money.fromMinorUnits(additionalCost, 'TWD')
+      const accountingCurrency = financeCurrency ?? 'TWD'
+      const zeroRes = Money.zero(accountingCurrency)
+      const costRes = Money.fromMinorUnits(additionalCost, accountingCurrency)
       if (zeroRes.isOk && costRes.isOk) {
         const lines: JournalLine[] = [
           {
@@ -333,11 +432,13 @@ export class InMemoryManufacturingService extends ManufacturingContract {
             memo: `Raw materials issued for WO ${wo.workOrderNumber}`,
           },
         ]
+        const journalSuffix = randomUUID().replaceAll('-', '').slice(0, 12)
+        const wipJournalId = `je-wip-${wo.id.slice(0, 32)}-${journalSuffix}`
         const wipDraftRes = await this.finance.createDraft(
           {
-            id: `je-wip-${wo.id}-${Date.now()}`,
+            id: wipJournalId,
             companyId: wo.companyId,
-            number: `JE-WIP-${wo.workOrderNumber}`,
+            number: `JE-WIP-${wo.workOrderNumber.slice(0, 32)}-${journalSuffix}`,
             accountingDate: input.issueDate,
             memo: `WIP Direct Materials for WO ${wo.workOrderNumber}`,
             lines,
@@ -347,6 +448,8 @@ export class InMemoryManufacturingService extends ManufacturingContract {
         if (wipDraftRes.isErr) {
           return err(new ManufacturingError(wipDraftRes.error.message))
         }
+        const wipPostRes = await this.finance.postDraft(wipJournalId, undefined, options)
+        if (wipPostRes.isErr) return err(new ManufacturingError(wipPostRes.error.message))
       }
     }
 
@@ -384,8 +487,24 @@ export class InMemoryManufacturingService extends ManufacturingContract {
       return err(new ManufacturingError('Completed quantity must be greater than zero'))
     }
 
+    if (input.completedQuantity > wo.targetQuantity) {
+      return err(new ManufacturingError('Completed quantity cannot exceed work order target'))
+    }
+
     const totalCost = wo.actualDirectMaterialCostMinorUnits + wo.allocatedOverheadCostMinorUnits
     const unitCost = input.completedQuantity > 0n ? totalCost / input.completedQuantity : 0n
+    let currency = 'TWD'
+
+    if (this.inventory) {
+      const outputStock = await this.inventory.stock(
+        wo.companyId,
+        wo.outputItemId,
+        wo.outputWarehouseId,
+        options
+      )
+      if (outputStock.isErr) return err(new ManufacturingError(outputStock.error.message))
+      currency = outputStock.value.currency ?? 'TWD'
+    }
 
     if (this.inventory) {
       const recRes = await this.inventory.recordMovement(
@@ -398,7 +517,7 @@ export class InMemoryManufacturingService extends ManufacturingContract {
           sourceId: wo.id,
           quantityDelta: input.completedQuantity,
           unitCostMinorUnits: unitCost,
-          currency: 'TWD',
+          currency,
           occurredAt: new Date(input.completionDate),
         },
         options
@@ -410,8 +529,8 @@ export class InMemoryManufacturingService extends ManufacturingContract {
 
     // Finance Finished Goods entry: Debit FG, Credit WIP
     if (this.finance && totalCost > 0n) {
-      const zeroRes = Money.zero('TWD')
-      const costRes = Money.fromMinorUnits(totalCost, 'TWD')
+      const zeroRes = Money.zero(currency)
+      const costRes = Money.fromMinorUnits(totalCost, currency)
       if (zeroRes.isOk && costRes.isOk) {
         const lines: JournalLine[] = [
           {
@@ -427,9 +546,10 @@ export class InMemoryManufacturingService extends ManufacturingContract {
             memo: `WIP completion credit for WO ${wo.workOrderNumber}`,
           },
         ]
+        const finishedGoodsJournalId = `je-fg-${wo.id}`
         const finishedGoodsDraftRes = await this.finance.createDraft(
           {
-            id: `je-fg-${wo.id}`,
+            id: finishedGoodsJournalId,
             companyId: wo.companyId,
             number: `JE-FG-${wo.workOrderNumber}`,
             accountingDate: input.completionDate,
@@ -440,6 +560,14 @@ export class InMemoryManufacturingService extends ManufacturingContract {
         )
         if (finishedGoodsDraftRes.isErr) {
           return err(new ManufacturingError(finishedGoodsDraftRes.error.message))
+        }
+        const finishedGoodsPostRes = await this.finance.postDraft(
+          finishedGoodsJournalId,
+          undefined,
+          options
+        )
+        if (finishedGoodsPostRes.isErr) {
+          return err(new ManufacturingError(finishedGoodsPostRes.error.message))
         }
       }
     }
@@ -485,10 +613,23 @@ export class InMemoryManufacturingService extends ManufacturingContract {
     input: AllocateOverheadInput,
     options?: TransactionOptions
   ): Promise<Result<OverheadAllocationSummary, ManufacturingError | WorkOrderNotFoundError>> {
+    const companyId = input.companyId.trim()
+    const currency = (input.currency || 'TWD').trim().toUpperCase()
+    const workOrderIds = input.workOrderIds.map((id) => id.trim())
+    if (
+      !companyId ||
+      workOrderIds.length === 0 ||
+      workOrderIds.some((id, index) => !id || workOrderIds.indexOf(id) !== index) ||
+      input.totalPoolAmountMinorUnits < 0n ||
+      !/^[A-Z]{3}$/.test(currency)
+    ) {
+      return err(new ManufacturingError('Overhead allocation input is invalid'))
+    }
+
     const wos: WorkOrderSnapshot[] = []
-    for (const id of input.workOrderIds) {
+    for (const id of workOrderIds) {
       const wo = this.#workOrders.get(id)
-      if (!wo) {
+      if (!wo || wo.companyId !== companyId) {
         return err(new WorkOrderNotFoundError(id))
       }
       wos.push(wo)
@@ -509,13 +650,14 @@ export class InMemoryManufacturingService extends ManufacturingContract {
 
     const allocationResult = OverheadAllocationEngine.tryAllocate({
       totalPoolAmountMinorUnits: input.totalPoolAmountMinorUnits,
-      currency: input.currency || 'TWD',
+      currency,
       targets,
     })
     if (allocationResult.isErr) return err(allocationResult.error)
     const allocationResults = allocationResult.value
 
     const details: OverheadAllocationDetail[] = []
+    const updatedWorkOrders: WorkOrderSnapshot[] = []
 
     for (const alloc of allocationResults) {
       const wo = this.#workOrders.get(alloc.workOrderId)!
@@ -530,7 +672,7 @@ export class InMemoryManufacturingService extends ManufacturingContract {
         totalCostMinorUnits: newTotal,
         unitCostMinorUnits: newUnitCost,
       })
-      this.#workOrders.set(wo.id, updatedWo)
+      updatedWorkOrders.push(updatedWo)
 
       details.push({
         workOrderId: wo.id,
@@ -542,8 +684,8 @@ export class InMemoryManufacturingService extends ManufacturingContract {
 
     // Finance overhead application entry
     if (this.finance && input.totalPoolAmountMinorUnits > 0n) {
-      const zeroRes = Money.zero(input.currency || 'TWD')
-      const poolRes = Money.fromMinorUnits(input.totalPoolAmountMinorUnits, input.currency || 'TWD')
+      const zeroRes = Money.zero(currency)
+      const poolRes = Money.fromMinorUnits(input.totalPoolAmountMinorUnits, currency)
       if (zeroRes.isOk && poolRes.isOk) {
         const lines: JournalLine[] = [
           {
@@ -559,11 +701,13 @@ export class InMemoryManufacturingService extends ManufacturingContract {
             memo: 'Applied manufacturing overhead',
           },
         ]
+        const journalSuffix = randomUUID().replaceAll('-', '').slice(0, 12)
+        const overheadJournalId = `je-overhead-${journalSuffix}`
         const overheadDraftRes = await this.finance.createDraft(
           {
-            id: `je-overhead-${Date.now()}`,
-            companyId: input.companyId,
-            number: `JE-OH-${Date.now()}`,
+            id: overheadJournalId,
+            companyId,
+            number: `JE-OH-${journalSuffix}`,
             accountingDate: input.accountingDate,
             memo: 'Manufacturing Overhead Allocation',
             lines,
@@ -573,13 +717,19 @@ export class InMemoryManufacturingService extends ManufacturingContract {
         if (overheadDraftRes.isErr) {
           return err(new ManufacturingError(overheadDraftRes.error.message))
         }
+        const overheadPostRes = await this.finance.postDraft(overheadJournalId, undefined, options)
+        if (overheadPostRes.isErr) {
+          return err(new ManufacturingError(overheadPostRes.error.message))
+        }
       }
     }
+
+    for (const workOrder of updatedWorkOrders) this.#workOrders.set(workOrder.id, workOrder)
 
     this.eventEmitter?.emit(
       OverheadAllocatedEvent.EVENT_NAME,
       new OverheadAllocatedEvent(
-        input.companyId,
+        companyId,
         input.totalPoolAmountMinorUnits,
         details.length,
         new Date()
@@ -587,7 +737,7 @@ export class InMemoryManufacturingService extends ManufacturingContract {
     )
 
     return ok({
-      companyId: input.companyId,
+      companyId,
       totalPoolAmountMinorUnits: input.totalPoolAmountMinorUnits,
       allocations: Object.freeze(details),
     })

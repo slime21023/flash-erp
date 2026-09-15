@@ -1,3 +1,6 @@
+import { currentEventMetadata } from '@platform/context/index.js'
+import type { EventMetadata } from '@platform/context/index.js'
+
 export class WorkOrderReleasedEvent {
   static readonly EVENT_NAME = 'manufacturing.work_order_released'
 
@@ -6,7 +9,8 @@ export class WorkOrderReleasedEvent {
     public readonly companyId: string,
     public readonly outputItemId: string,
     public readonly targetQuantity: bigint,
-    public readonly releasedAt: Date
+    public readonly releasedAt: Date,
+    public readonly eventMetadata: EventMetadata = currentEventMetadata()
   ) {}
 }
 
@@ -19,7 +23,8 @@ export class MaterialIssuedEvent {
     public readonly componentItemId: string,
     public readonly quantity: bigint,
     public readonly costMinorUnits: bigint,
-    public readonly issuedAt: Date
+    public readonly issuedAt: Date,
+    public readonly eventMetadata: EventMetadata = currentEventMetadata()
   ) {}
 }
 
@@ -33,7 +38,8 @@ export class WorkOrderCompletedEvent {
     public readonly completedQuantity: bigint,
     public readonly totalCostMinorUnits: bigint,
     public readonly unitCostMinorUnits: bigint,
-    public readonly completedAt: Date
+    public readonly completedAt: Date,
+    public readonly eventMetadata: EventMetadata = currentEventMetadata()
   ) {}
 }
 
@@ -44,6 +50,7 @@ export class OverheadAllocatedEvent {
     public readonly companyId: string,
     public readonly totalOverheadAmountMinorUnits: bigint,
     public readonly workOrderCount: number,
-    public readonly allocatedAt: Date
+    public readonly allocatedAt: Date,
+    public readonly eventMetadata: EventMetadata = currentEventMetadata()
   ) {}
 }

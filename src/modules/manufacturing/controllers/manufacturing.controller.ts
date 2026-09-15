@@ -35,6 +35,7 @@ export class ManufacturingController {
     return ResultPresenter.handle(res, result, { successStatus: 201 })
   }
 
+  @RequirePermission('manufacturing.bom.read')
   @Get('boms/:id')
   async getBom(@Param('id') id: string, @Res() res: Response) {
     const result = await this.manufacturing.getBom(id)
@@ -97,6 +98,7 @@ export class ManufacturingController {
     return ResultPresenter.handle(res, result)
   }
 
+  @RequirePermission('manufacturing.order.read')
   @Get('work-orders/:id')
   async getWorkOrder(@Param('id') id: string, @Res() res: Response) {
     const result = await this.manufacturing.getWorkOrder(id)

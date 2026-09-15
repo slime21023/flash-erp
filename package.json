@@ -7,6 +7,9 @@
   "workspaces": [
     "frontend"
   ],
+  "overrides": {
+    "multer": "2.3.0"
+  },
   "engines": {
     "node": ">=22.0.0"
   },
@@ -15,6 +18,7 @@
     "start:dev": "tsx watch src/main.ts",
     "build": "tsc && node dist/scripts/resolve_compiled_aliases.js",
     "test": "vitest run",
+    "test:integration": "vitest run --config vitest.integration.config.ts",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
@@ -34,7 +38,7 @@
     "@nestjs/core": "^11.0.11",
     "@nestjs/event-emitter": "^12.0.0",
     "@nestjs/platform-express": "^11.0.11",
-    "@nestjs/swagger": "^11.0.0",
+    "@nestjs/swagger": "^11.4.7",
     "@nestjs/typeorm": "^11.0.0",
     "class-transformer": "^0.5.1",
     "class-validator": "^0.14.1",
@@ -58,6 +62,6 @@
     "tsx": "^4.19.3",
     "typescript": "~5.8.3",
     "typescript-eslint": "^8.24.0",
-    "vitest": "^3.0.7"
+    "vitest": "^5.0.0"
   }
 }

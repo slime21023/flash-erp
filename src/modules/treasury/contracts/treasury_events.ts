@@ -1,3 +1,6 @@
+import { currentEventMetadata } from '@platform/context/index.js'
+import type { EventMetadata } from '@platform/context/index.js'
+
 export class PaymentProcessedEvent {
   static readonly EVENT_NAME = 'treasury.payment_processed'
 
@@ -8,7 +11,8 @@ export class PaymentProcessedEvent {
     public readonly beneficiaryId: string,
     public readonly amountMinorUnits: bigint,
     public readonly currency: string,
-    public readonly processedAt: Date
+    public readonly processedAt: Date,
+    public readonly eventMetadata: EventMetadata = currentEventMetadata()
   ) {}
 }
 
@@ -22,7 +26,8 @@ export class ReceiptProcessedEvent {
     public readonly payerId: string,
     public readonly amountMinorUnits: bigint,
     public readonly currency: string,
-    public readonly processedAt: Date
+    public readonly processedAt: Date,
+    public readonly eventMetadata: EventMetadata = currentEventMetadata()
   ) {}
 }
 
@@ -35,6 +40,7 @@ export class BankStatementReconciledEvent {
     public readonly matchedCount: number,
     public readonly unmatchedCount: number,
     public readonly isBalanced: boolean,
-    public readonly reconciledAt: Date
+    public readonly reconciledAt: Date,
+    public readonly eventMetadata: EventMetadata = currentEventMetadata()
   ) {}
 }

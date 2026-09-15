@@ -1,6 +1,7 @@
 import { err, ok } from '@platform/fp/index.js'
 import type { Result } from '@platform/fp/index.js'
 import type { TransactionOptions } from '@platform/persistence/index.js'
+import { createHash } from 'node:crypto'
 import { Money } from '@platform/kernel/index.js'
 import {
   type InventoryContract,
@@ -25,11 +26,23 @@ import {
   type CustomerCreditCheckResult,
   type CustomerSnapshot,
   type RegisterCustomerInput,
+  type SettleCustomerReceivableInput,
   type SalesOrderLineSnapshot,
   type SalesOrderSnapshot,
   type ShipmentLineSnapshot,
   type ShipmentSnapshot,
 } from '../contracts/index.js'
+
+type ShipmentWorkLine = ShipmentLineSnapshot & {
+  warehouseId: string
+  reservationId: string
+  orderLineKey: string
+}
+
+function stableReference(prefix: string, ...parts: string[]): string {
+  const digest = createHash('sha256').update(parts.join('\0')).digest('hex')
+  return `${prefix}-${digest.slice(0, 48)}`
+}
 
 export class InMemorySalesService extends SalesContract {
   readonly #customers = new Map<string, CustomerSnapshot>()
@@ -52,9 +65,14 @@ export class InMemorySalesService extends SalesContract {
     const companyId = input.companyId.trim()
     const code = input.code.trim().toUpperCase()
     const name = input.name.trim()
+    const currency = (input.currency || 'TWD').trim().toUpperCase()
 
-    if (!id || !companyId || !code || !name) {
+    if (!id || !companyId || !code || !name || !/^[A-Z]{3}$/.test(currency)) {
       return err(new SalesError('Customer id, companyId, code, and name are required'))
+    }
+
+    if (input.creditLimitMinorUnits < 0n) {
+      return err(new SalesError('Credit limit cannot be negative'))
     }
 
     if (
@@ -70,7 +88,7 @@ export class InMemorySalesService extends SalesContract {
       code,
       name,
       paymentTerms: input.paymentTerms || 'NET30',
-      currency: input.currency || 'TWD',
+      currency,
       creditLimitMinorUnits: input.creditLimitMinorUnits,
       currentOutstandingMinorUnits: 0n,
       isActive: true,
@@ -129,6 +147,29 @@ export class InMemorySalesService extends SalesContract {
     })
   }
 
+  async settleCustomerReceivable(
+    input: SettleCustomerReceivableInput,
+    _options?: TransactionOptions
+  ): Promise<Result<CustomerSnapshot, CustomerNotFoundError | SalesError>> {
+    const customer = this.#customers.get(input.customerId.trim())
+    if (!customer || customer.companyId !== input.companyId.trim() || !customer.isActive) {
+      return err(new CustomerNotFoundError(input.customerId))
+    }
+    if (input.amountMinorUnits <= 0n || customer.currency !== input.currency.trim().toUpperCase()) {
+      return err(new SalesError('Settlement amount or currency is invalid'))
+    }
+    if (input.amountMinorUnits > customer.currentOutstandingMinorUnits) {
+      return err(new SalesError('Settlement exceeds customer outstanding receivable'))
+    }
+
+    const settled = Object.freeze({
+      ...customer,
+      currentOutstandingMinorUnits: customer.currentOutstandingMinorUnits - input.amountMinorUnits,
+    })
+    this.#customers.set(customer.id, settled)
+    return ok(settled)
+  }
+
   async createSalesOrder(
     input: CreateSalesOrderInput,
     _options?: TransactionOptions
@@ -147,24 +188,41 @@ export class InMemorySalesService extends SalesContract {
       return err(new CustomerNotFoundError(customerId))
     }
 
+    const taxRateBps = input.taxRateBasisPoints ?? 500
+    if (!Number.isInteger(taxRateBps) || taxRateBps < 0 || taxRateBps > 10_000) {
+      return err(new SalesError('Tax rate must be between 0 and 10000 basis points'))
+    }
+
+    const currencies = new Set(input.lines.map((line) => line.currency.trim().toUpperCase()))
+    if (currencies.size !== 1 || !currencies.has(customer.currency ?? 'TWD')) {
+      return err(new SalesError('All sales order lines must use the customer currency'))
+    }
+
+    const lineKeys = new Set<string>()
     for (const line of input.lines) {
-      if (line.orderedQuantity <= 0n || line.unitPriceMinorUnits < 0n) {
+      const itemId = line.itemId.trim()
+      const warehouseId = line.warehouseId.trim()
+      if (!itemId || !warehouseId || line.orderedQuantity <= 0n || line.unitPriceMinorUnits < 0n) {
         return err(new SalesError('Line ordered quantity and unit price must be valid'))
       }
+
+      const lineKey = `${itemId}:${warehouseId}`
+      if (lineKeys.has(lineKey))
+        return err(new SalesError(`Duplicate sales order line: ${lineKey}`))
+      lineKeys.add(lineKey)
     }
 
     const processedLines: SalesOrderLineSnapshot[] = input.lines.map((l) => ({
-      itemId: l.itemId,
-      warehouseId: l.warehouseId,
+      itemId: l.itemId.trim(),
+      warehouseId: l.warehouseId.trim(),
       orderedQuantity: l.orderedQuantity,
       shippedQuantity: 0n,
       unitPriceMinorUnits: l.unitPriceMinorUnits,
       lineTotalMinorUnits: l.orderedQuantity * l.unitPriceMinorUnits,
-      currency: l.currency,
+      currency: l.currency.trim().toUpperCase(),
     }))
 
     const netAmountMinorUnits = processedLines.reduce((sum, l) => sum + l.lineTotalMinorUnits, 0n)
-    const taxRateBps = input.taxRateBasisPoints ?? 500
     const taxAmountMinorUnits = (netAmountMinorUnits * BigInt(taxRateBps) + 5000n) / 10000n
     const totalAmountMinorUnits = netAmountMinorUnits + taxAmountMinorUnits
 
@@ -246,7 +304,7 @@ export class InMemorySalesService extends SalesContract {
     const reservationIds: string[] = []
     if (this.inventory) {
       for (const line of so.lines) {
-        const resId = `res-${so.id}-${line.itemId}`
+        const resId = stableReference('res', so.id, line.itemId, line.warehouseId)
         const reserveRes = await this.inventory.reserve(
           {
             id: resId,
@@ -307,38 +365,71 @@ export class InMemorySalesService extends SalesContract {
       | AccountsReceivablePostingError
     >
   > {
-    const so = this.#salesOrders.get(input.salesOrderId)
+    const shipmentId = input.id.trim()
+    const salesOrderId = input.salesOrderId.trim()
+    const shipmentDate = input.shipmentDate.trim()
+    if (!shipmentId || !salesOrderId || !/^\d{4}-\d{2}-\d{2}$/.test(shipmentDate)) {
+      return err(new ShipmentError('Shipment id, order, warehouse, and ISO date are required'))
+    }
+    if (this.#shipments.has(shipmentId)) {
+      return err(new ShipmentError(`Shipment already exists: ${shipmentId}`))
+    }
+
+    const so = this.#salesOrders.get(salesOrderId)
     if (!so) {
-      return err(new SalesOrderNotFoundError(input.salesOrderId))
+      return err(new SalesOrderNotFoundError(salesOrderId))
     }
 
     if (so.status !== 'CONFIRMED') {
       return err(new InvalidSalesOrderStateError(so.status, 'ship'))
     }
 
-    const linesToShip: ShipmentLineSnapshot[] = []
+    const warehouseId = input.warehouseId.trim()
+    if (!warehouseId) return err(new ShipmentError('warehouseId is required'))
+
+    const linesToShip: ShipmentWorkLine[] = []
     let totalShippedNetMinorUnits = 0n
     let totalCogsMinorUnits = 0n
 
-    const soLinesMap = new Map(so.lines.map((l) => [l.itemId, l]))
+    const lineKey = (itemId: string, lineWarehouseId: string) => `${itemId}:${lineWarehouseId}`
+    const soLinesMap = new Map(
+      so.lines.map((l) => [lineKey(l.itemId.trim(), l.warehouseId.trim()), l])
+    )
 
     if (input.lines && input.lines.length > 0) {
+      const requestedKeys = new Set<string>()
       for (const reqLine of input.lines) {
-        const soLine = soLinesMap.get(reqLine.itemId)
+        if (reqLine.shippedQuantity <= 0n) {
+          return err(new ShipmentError('Shipped quantity must be greater than zero'))
+        }
+        const itemId = reqLine.itemId.trim()
+        const orderLineKey = lineKey(itemId, warehouseId)
+        if (requestedKeys.has(orderLineKey)) {
+          return err(new ShipmentError(`Duplicate shipment line: ${orderLineKey}`))
+        }
+        requestedKeys.add(orderLineKey)
+        const soLine = soLinesMap.get(orderLineKey)
         if (!soLine) {
-          return err(new ShipmentError(`Item ${reqLine.itemId} does not belong to sales order`))
+          return err(
+            new ShipmentError(
+              `Item ${itemId} does not belong to sales order warehouse ${warehouseId}`
+            )
+          )
         }
         const remaining = soLine.orderedQuantity - soLine.shippedQuantity
         if (reqLine.shippedQuantity > remaining) {
           return err(
             new ShipmentError(
-              `Shipped quantity ${reqLine.shippedQuantity} exceeds remaining ${remaining} for item ${reqLine.itemId}`
+              `Shipped quantity ${reqLine.shippedQuantity} exceeds remaining ${remaining} for item ${itemId}`
             )
           )
         }
         const lineTotal = reqLine.shippedQuantity * soLine.unitPriceMinorUnits
         linesToShip.push({
-          itemId: reqLine.itemId,
+          itemId,
+          warehouseId,
+          reservationId: stableReference('res', so.id, soLine.itemId, soLine.warehouseId),
+          orderLineKey,
           shippedQuantity: reqLine.shippedQuantity,
           unitPriceMinorUnits: soLine.unitPriceMinorUnits,
           lineTotalMinorUnits: lineTotal,
@@ -348,11 +439,16 @@ export class InMemorySalesService extends SalesContract {
     } else {
       // Ship all remaining
       for (const soLine of so.lines) {
+        if (soLine.warehouseId !== warehouseId) continue
         const remaining = soLine.orderedQuantity - soLine.shippedQuantity
         if (remaining > 0n) {
+          const orderLineKey = lineKey(soLine.itemId, soLine.warehouseId)
           const lineTotal = remaining * soLine.unitPriceMinorUnits
           linesToShip.push({
             itemId: soLine.itemId,
+            warehouseId: soLine.warehouseId,
+            reservationId: stableReference('res', so.id, soLine.itemId, soLine.warehouseId),
+            orderLineKey,
             shippedQuantity: remaining,
             unitPriceMinorUnits: soLine.unitPriceMinorUnits,
             lineTotalMinorUnits: lineTotal,
@@ -369,38 +465,44 @@ export class InMemorySalesService extends SalesContract {
     // 1. Deduct Inventory & Release Reservations
     if (this.inventory) {
       for (const shipLine of linesToShip) {
+        const reservationRes = await this.inventory.consumeReservation(
+          shipLine.reservationId,
+          shipLine.shippedQuantity,
+          options
+        )
+        if (reservationRes.isErr) return err(new ShipmentError(reservationRes.error.message))
+
         const stockRes = await this.inventory.stock(
           so.companyId,
           shipLine.itemId,
-          input.warehouseId,
+          shipLine.warehouseId,
           options
         )
         if (stockRes.isErr) return err(new ShipmentError(stockRes.error.message))
 
         const unitCost = stockRes.value.averageUnitCostMinorUnits
         const currency = stockRes.value.currency ?? 'TWD'
+        if (currency !== (so.lines[0]?.currency ?? currency)) {
+          return err(new ShipmentError('Inventory and sales order currencies must match'))
+        }
         totalCogsMinorUnits += shipLine.shippedQuantity * unitCost
 
         const movRes = await this.inventory.recordMovement(
           {
-            id: `mov-${input.id}-${shipLine.itemId}`,
+            id: stableReference('mov', shipmentId, shipLine.itemId, shipLine.warehouseId),
             companyId: so.companyId,
             itemId: shipLine.itemId,
-            warehouseId: input.warehouseId,
+            warehouseId: shipLine.warehouseId,
             sourceType: 'SALES_SHIPMENT',
-            sourceId: input.id,
+            sourceId: shipmentId,
             quantityDelta: -shipLine.shippedQuantity,
             unitCostMinorUnits: unitCost,
             currency,
-            occurredAt: new Date(input.shipmentDate),
+            occurredAt: new Date(shipmentDate),
           },
           options
         )
         if (movRes.isErr) return err(new ShipmentError(movRes.error.message))
-
-        // Release reservation
-        const resId = `res-${so.id}-${shipLine.itemId}`
-        await this.inventory.releaseReservation(resId, options)
       }
     }
 
@@ -410,8 +512,11 @@ export class InMemorySalesService extends SalesContract {
     const shippedTotalMinorUnits = totalShippedNetMinorUnits + shippedTaxMinorUnits
 
     const currency = so.lines[0]?.currency ?? 'TWD'
-    const arVoucherId = input.arVoucherId ?? `je-ar-${input.id}`
-    const cogsVoucherId = input.cogsVoucherId ?? `je-cogs-${input.id}`
+    const arVoucherId = input.arVoucherId?.trim() || stableReference('je-ar', shipmentId)
+    const cogsVoucherId = input.cogsVoucherId?.trim() || stableReference('je-cogs', shipmentId)
+    if (arVoucherId === cogsVoucherId) {
+      return err(new AccountsReceivablePostingError('AR and COGS voucher IDs must differ'))
+    }
 
     // 3. Post AR & COGS to Finance
     if (this.finance) {
@@ -456,9 +561,9 @@ export class InMemorySalesService extends SalesContract {
         {
           id: arVoucherId,
           companyId: so.companyId,
-          number: `JE-AR-${so.number}`,
-          accountingDate: input.shipmentDate,
-          memo: `AR Invoice for Shipment ${input.id}`,
+          number: stableReference('JE-AR', shipmentId),
+          accountingDate: shipmentDate,
+          memo: `AR Invoice for Shipment ${shipmentId}`,
           lines: arLines,
         },
         options
@@ -466,6 +571,15 @@ export class InMemorySalesService extends SalesContract {
       if (arDraftRes.isErr) {
         return err(
           new AccountsReceivablePostingError(`AR Finance draft failed: ${arDraftRes.error.message}`)
+        )
+      }
+
+      const arPostRes = await this.finance.postDraft(arVoucherId, undefined, options)
+      if (arPostRes.isErr) {
+        return err(
+          new AccountsReceivablePostingError(
+            `AR Finance posting failed: ${arPostRes.error.message}`
+          )
         )
       }
 
@@ -492,15 +606,19 @@ export class InMemorySalesService extends SalesContract {
             {
               id: cogsVoucherId,
               companyId: so.companyId,
-              number: `JE-COGS-${so.number}`,
-              accountingDate: input.shipmentDate,
-              memo: `COGS Voucher for Shipment ${input.id}`,
+              number: stableReference('JE-COGS', shipmentId),
+              accountingDate: shipmentDate,
+              memo: `COGS Voucher for Shipment ${shipmentId}`,
               lines: cogsLines,
             },
             options
           )
           if (cogsDraftRes.isErr) {
             return err(new AccountsReceivablePostingError(cogsDraftRes.error.message))
+          }
+          const cogsPostRes = await this.finance.postDraft(cogsVoucherId, undefined, options)
+          if (cogsPostRes.isErr) {
+            return err(new AccountsReceivablePostingError(cogsPostRes.error.message))
           }
         }
       }
@@ -517,9 +635,9 @@ export class InMemorySalesService extends SalesContract {
     }
 
     // 5. Update SO lines shipped quantity and check if fully shipped
-    const shippedQtyByItem = new Map(linesToShip.map((l) => [l.itemId, l.shippedQuantity]))
+    const shippedQtyByLine = new Map(linesToShip.map((l) => [l.orderLineKey, l.shippedQuantity]))
     const updatedSoLines = so.lines.map((l) => {
-      const added = shippedQtyByItem.get(l.itemId) ?? 0n
+      const added = shippedQtyByLine.get(lineKey(l.itemId, l.warehouseId)) ?? 0n
       return {
         ...l,
         shippedQuantity: l.shippedQuantity + added,
@@ -535,21 +653,30 @@ export class InMemorySalesService extends SalesContract {
     this.#salesOrders.set(so.id, updatedSo)
 
     const shipment: ShipmentSnapshot = Object.freeze({
-      id: input.id,
+      id: shipmentId,
       salesOrderId: so.id,
       companyId: so.companyId,
       customerId: so.customerId,
-      warehouseId: input.warehouseId,
-      shipmentDate: input.shipmentDate,
+      warehouseId,
+      shipmentDate,
       status: 'SHIPPED',
       arJournalEntryId: arVoucherId,
       cogsJournalEntryId: totalCogsMinorUnits > 0n ? cogsVoucherId : undefined,
       totalShippedAmountMinorUnits: shippedTotalMinorUnits,
-      lines: Object.freeze(linesToShip),
+      lines: Object.freeze(
+        linesToShip.map(
+          ({
+            warehouseId: _warehouseId,
+            reservationId: _reservationId,
+            orderLineKey: _orderLineKey,
+            ...line
+          }) => line
+        )
+      ),
       shippedAt: new Date(),
     })
 
-    this.#shipments.set(input.id, shipment)
+    this.#shipments.set(shipmentId, shipment)
     this.eventEmitter?.emit(
       SalesOrderShippedEvent.EVENT_NAME,
       new SalesOrderShippedEvent(

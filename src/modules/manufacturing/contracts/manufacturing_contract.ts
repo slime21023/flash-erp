@@ -1,5 +1,6 @@
 import type { Result } from '@platform/fp/index.js'
 import type { TransactionOptions } from '@platform/persistence/index.js'
+import type { ScopeForbiddenError } from '@platform/security/index.js'
 import type {
   BomAlreadyExistsError,
   BomNotFoundError,
@@ -128,18 +129,21 @@ export abstract class ManufacturingContract {
     input: RegisterBomInput,
     options?: TransactionOptions
   ): Promise<
-    Result<BomSnapshot, ManufacturingError | BomAlreadyExistsError | CyclicBomDependencyError>
+    Result<
+      BomSnapshot,
+      ManufacturingError | BomAlreadyExistsError | CyclicBomDependencyError | ScopeForbiddenError
+    >
   >
 
   abstract getBom(
     id: string,
     options?: TransactionOptions
-  ): Promise<Result<BomSnapshot, BomNotFoundError>>
+  ): Promise<Result<BomSnapshot, BomNotFoundError | ScopeForbiddenError>>
 
   abstract createWorkOrder(
     input: CreateWorkOrderInput,
     options?: TransactionOptions
-  ): Promise<Result<WorkOrderSnapshot, ManufacturingError | BomNotFoundError>>
+  ): Promise<Result<WorkOrderSnapshot, ManufacturingError | BomNotFoundError | ScopeForbiddenError>>
 
   abstract releaseWorkOrder(
     id: string,
@@ -147,7 +151,7 @@ export abstract class ManufacturingContract {
   ): Promise<
     Result<
       WorkOrderSnapshot,
-      ManufacturingError | WorkOrderNotFoundError | InvalidWorkOrderStateError
+      ManufacturingError | WorkOrderNotFoundError | InvalidWorkOrderStateError | ScopeForbiddenError
     >
   >
 
@@ -161,6 +165,7 @@ export abstract class ManufacturingContract {
       | WorkOrderNotFoundError
       | InvalidWorkOrderStateError
       | MaterialIssueQuantityExceededError
+      | ScopeForbiddenError
     >
   >
 
@@ -170,17 +175,22 @@ export abstract class ManufacturingContract {
   ): Promise<
     Result<
       WorkOrderSnapshot,
-      ManufacturingError | WorkOrderNotFoundError | InvalidWorkOrderStateError
+      ManufacturingError | WorkOrderNotFoundError | InvalidWorkOrderStateError | ScopeForbiddenError
     >
   >
 
   abstract getWorkOrder(
     id: string,
     options?: TransactionOptions
-  ): Promise<Result<WorkOrderSnapshot, WorkOrderNotFoundError>>
+  ): Promise<Result<WorkOrderSnapshot, WorkOrderNotFoundError | ScopeForbiddenError>>
 
   abstract allocateOverhead(
     input: AllocateOverheadInput,
     options?: TransactionOptions
-  ): Promise<Result<OverheadAllocationSummary, ManufacturingError | WorkOrderNotFoundError>>
+  ): Promise<
+    Result<
+      OverheadAllocationSummary,
+      ManufacturingError | WorkOrderNotFoundError | ScopeForbiddenError
+    >
+  >
 }

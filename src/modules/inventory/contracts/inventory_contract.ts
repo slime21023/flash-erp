@@ -1,5 +1,6 @@
 import type { Result } from '@platform/fp/index.js'
 import type { TransactionOptions } from '@platform/persistence/index.js'
+import type { ScopeForbiddenError } from '@platform/security/index.js'
 import type { InsufficientStockError, InventoryMovementError } from './inventory_errors.js'
 
 export type InventoryMovementInput = Readonly<{
@@ -78,37 +79,62 @@ export abstract class InventoryContract {
   abstract registerUnit(
     input: InventoryUnitInput,
     options?: TransactionOptions
-  ): Promise<Result<InventoryUnitInput, InventoryMovementError>>
+  ): Promise<Result<InventoryUnitInput, InventoryMovementError | ScopeForbiddenError>>
   abstract registerItem(
     input: InventoryItemInput,
     options?: TransactionOptions
-  ): Promise<Result<InventoryItemInput, InventoryMovementError>>
+  ): Promise<Result<InventoryItemInput, InventoryMovementError | ScopeForbiddenError>>
   abstract registerWarehouse(
     input: InventoryWarehouseInput,
     options?: TransactionOptions
-  ): Promise<Result<InventoryWarehouseInput, InventoryMovementError>>
+  ): Promise<Result<InventoryWarehouseInput, InventoryMovementError | ScopeForbiddenError>>
+  abstract findItem(
+    companyId: string,
+    itemId: string,
+    options?: TransactionOptions
+  ): Promise<Result<InventoryItemInput, InventoryMovementError | ScopeForbiddenError>>
+  abstract findWarehouse(
+    companyId: string,
+    warehouseId: string,
+    options?: TransactionOptions
+  ): Promise<Result<InventoryWarehouseInput, InventoryMovementError | ScopeForbiddenError>>
   abstract recordMovement(
     input: InventoryMovementInput,
     options?: TransactionOptions
-  ): Promise<Result<InventoryMovementSnapshot, InventoryMovementError>>
+  ): Promise<Result<InventoryMovementSnapshot, InventoryMovementError | ScopeForbiddenError>>
   abstract stock(
     companyId: string,
     itemId: string,
     warehouseId: string,
     options?: TransactionOptions
-  ): Promise<Result<InventoryStockSnapshot, InventoryMovementError>>
+  ): Promise<Result<InventoryStockSnapshot, InventoryMovementError | ScopeForbiddenError>>
   abstract reserve(
     input: StockReservationInput,
     options?: TransactionOptions
-  ): Promise<Result<StockReservationSnapshot, InventoryMovementError | InsufficientStockError>>
+  ): Promise<
+    Result<
+      StockReservationSnapshot,
+      InventoryMovementError | InsufficientStockError | ScopeForbiddenError
+    >
+  >
   abstract releaseReservation(
     id: string,
     options?: TransactionOptions
-  ): Promise<Result<void, InventoryMovementError>>
+  ): Promise<Result<void, InventoryMovementError | ScopeForbiddenError>>
+  abstract consumeReservation(
+    id: string,
+    quantity: bigint,
+    options?: TransactionOptions
+  ): Promise<
+    Result<
+      StockReservationSnapshot,
+      InventoryMovementError | InsufficientStockError | ScopeForbiddenError
+    >
+  >
   abstract availableStock(
     companyId: string,
     itemId: string,
     warehouseId: string,
     options?: TransactionOptions
-  ): Promise<Result<InventoryAvailabilitySnapshot, InventoryMovementError>>
+  ): Promise<Result<InventoryAvailabilitySnapshot, InventoryMovementError | ScopeForbiddenError>>
 }

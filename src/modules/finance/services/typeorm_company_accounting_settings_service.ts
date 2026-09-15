@@ -4,6 +4,8 @@ import { Repository } from 'typeorm'
 import { err, ok } from '@platform/fp/index.js'
 import type { Result } from '@platform/fp/index.js'
 import type { TransactionOptions } from '@platform/persistence/index.js'
+import { scopeMismatch } from '@platform/context/index.js'
+import { ScopeForbiddenError } from '@platform/security/index.js'
 import {
   CompanyAccountingSettingsContract,
   CompanyAccountingSettingsError,
@@ -23,7 +25,9 @@ export class TypeOrmCompanyAccountingSettingsService extends CompanyAccountingSe
   async configure(
     settings: CompanyAccountingSettings,
     options?: TransactionOptions
-  ): Promise<Result<CompanyAccountingSettings, CompanyAccountingSettingsError>> {
+  ): Promise<
+    Result<CompanyAccountingSettings, CompanyAccountingSettingsError | ScopeForbiddenError>
+  > {
     const companyId = settings.companyId.trim()
     const baseCurrency = settings.baseCurrency.trim().toUpperCase()
 
@@ -32,6 +36,9 @@ export class TypeOrmCompanyAccountingSettingsService extends CompanyAccountingSe
         new CompanyAccountingSettingsError(companyId, 'A three-letter base currency is required')
       )
     }
+
+    const selectedScope = scopeMismatch(companyId, options)
+    if (selectedScope) return err(new ScopeForbiddenError(selectedScope, 'company settings'))
 
     const manager = options?.client ?? this.repo.manager
     try {
@@ -54,7 +61,12 @@ export class TypeOrmCompanyAccountingSettingsService extends CompanyAccountingSe
     companyId: string,
     currency: string,
     options?: TransactionOptions
-  ): Promise<Result<CompanyAccountingSettings, CompanyAccountingSettingsError>> {
+  ): Promise<
+    Result<CompanyAccountingSettings, CompanyAccountingSettingsError | ScopeForbiddenError>
+  > {
+    const selectedScope = scopeMismatch(companyId, options)
+    if (selectedScope) return err(new ScopeForbiddenError(selectedScope, 'company settings'))
+
     const manager = options?.client ?? this.repo.manager
     const row = await manager.findOne(CompanyAccountingSettingsEntity, { where: { companyId } })
 

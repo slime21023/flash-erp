@@ -27,6 +27,7 @@ export class InventoryMovementsController {
     return ResultPresenter.handle(res, result, { successStatus: 201 })
   }
 
+  @RequirePermission('inventory.stock.read')
   @Get('stock')
   async showStock(
     @Query('companyId') companyId: string,

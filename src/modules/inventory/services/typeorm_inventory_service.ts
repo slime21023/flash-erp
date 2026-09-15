@@ -1,9 +1,11 @@
 import { Injectable } from '@nestjs/common'
 import { InjectRepository } from '@nestjs/typeorm'
-import { Repository } from 'typeorm'
+import { EntityManager, Repository } from 'typeorm'
 import { err, ok } from '@platform/fp/index.js'
 import type { Result } from '@platform/fp/index.js'
 import { type TransactionOptions, runInTransaction } from '@platform/persistence/index.js'
+import { scopeMismatch } from '@platform/context/index.js'
+import { ScopeForbiddenError } from '@platform/security/index.js'
 import {
   InsufficientStockError,
   InventoryContract,
@@ -43,6 +45,18 @@ export class TypeOrmInventoryService extends InventoryContract {
     super()
   }
 
+  // ponytail: one PostgreSQL transaction lock per stock key; add a balance table only if throughput proves this ledger scan insufficient.
+  private async lockStock(
+    manager: EntityManager,
+    companyId: string,
+    itemId: string,
+    warehouseId: string
+  ): Promise<void> {
+    await manager.query('SELECT pg_advisory_xact_lock(hashtext($1))', [
+      `${companyId}:${itemId}:${warehouseId}`,
+    ])
+  }
+
   async registerUnit(
     input: InventoryUnitInput,
     options?: TransactionOptions
@@ -68,7 +82,7 @@ export class TypeOrmInventoryService extends InventoryContract {
   async registerItem(
     input: InventoryItemInput,
     options?: TransactionOptions
-  ): Promise<Result<InventoryItemInput, InventoryMovementError>> {
+  ): Promise<Result<InventoryItemInput, InventoryMovementError | ScopeForbiddenError>> {
     const id = input.id.trim()
     const companyId = input.companyId.trim()
     const sku = input.sku.trim().toUpperCase()
@@ -78,6 +92,9 @@ export class TypeOrmInventoryService extends InventoryContract {
     if (!id || !companyId || !sku || !name || !unitId) {
       return err(new InventoryMovementError('Item fields are required'))
     }
+
+    const selectedScope = scopeMismatch(companyId, options)
+    if (selectedScope) return err(new ScopeForbiddenError(selectedScope, 'inventory item'))
 
     const manager = options?.client ?? this.itemRepo.manager
     try {
@@ -99,7 +116,7 @@ export class TypeOrmInventoryService extends InventoryContract {
   async registerWarehouse(
     input: InventoryWarehouseInput,
     options?: TransactionOptions
-  ): Promise<Result<InventoryWarehouseInput, InventoryMovementError>> {
+  ): Promise<Result<InventoryWarehouseInput, InventoryMovementError | ScopeForbiddenError>> {
     const id = input.id.trim()
     const companyId = input.companyId.trim()
     const organizationUnitId = input.organizationUnitId.trim()
@@ -109,6 +126,9 @@ export class TypeOrmInventoryService extends InventoryContract {
     if (!id || !companyId || !organizationUnitId || !code || !name) {
       return err(new InventoryMovementError('Warehouse fields are required'))
     }
+
+    const selectedScope = scopeMismatch(companyId, options)
+    if (selectedScope) return err(new ScopeForbiddenError(selectedScope, 'warehouse'))
 
     const manager = options?.client ?? this.warehouseRepo.manager
     try {
@@ -127,14 +147,80 @@ export class TypeOrmInventoryService extends InventoryContract {
     }
   }
 
+  async findItem(
+    companyId: string,
+    itemId: string,
+    options?: TransactionOptions
+  ): Promise<Result<InventoryItemInput, InventoryMovementError | ScopeForbiddenError>> {
+    const selectedScope = scopeMismatch(companyId, options)
+    if (selectedScope) return err(new ScopeForbiddenError(selectedScope, 'inventory item'))
+
+    const manager = options?.client ?? this.itemRepo.manager
+    const item = await manager.findOne(InventoryItemEntity, { where: { id: itemId } })
+    if (!item || !item.isActive || item.companyId !== companyId) {
+      return err(new InventoryMovementError('Item must be active in the same company'))
+    }
+    return ok({
+      id: item.id,
+      companyId: item.companyId,
+      sku: item.sku,
+      name: item.name,
+      unitId: item.unitId,
+    })
+  }
+
+  async findWarehouse(
+    companyId: string,
+    warehouseId: string,
+    options?: TransactionOptions
+  ): Promise<Result<InventoryWarehouseInput, InventoryMovementError | ScopeForbiddenError>> {
+    const selectedScope = scopeMismatch(companyId, options)
+    if (selectedScope) return err(new ScopeForbiddenError(selectedScope, 'warehouse'))
+
+    const manager = options?.client ?? this.warehouseRepo.manager
+    const warehouse = await manager.findOne(InventoryWarehouseEntity, {
+      where: { id: warehouseId },
+    })
+    if (!warehouse || !warehouse.isActive || warehouse.companyId !== companyId) {
+      return err(new InventoryMovementError('Warehouse must be active in the same company'))
+    }
+    return ok({
+      id: warehouse.id,
+      companyId: warehouse.companyId,
+      organizationUnitId: warehouse.organizationUnitId,
+      code: warehouse.code,
+      name: warehouse.name,
+    })
+  }
+
   async stock(
     companyId: string,
     itemId: string,
     warehouseId: string,
     options?: TransactionOptions
-  ): Promise<Result<InventoryStockSnapshot, InventoryMovementError>> {
+  ): Promise<Result<InventoryStockSnapshot, InventoryMovementError | ScopeForbiddenError>> {
     const manager = options?.client ?? this.movementRepo.manager
     try {
+      const item = await manager.findOne(InventoryItemEntity, { where: { id: itemId } })
+      const warehouse = await manager.findOne(InventoryWarehouseEntity, {
+        where: { id: warehouseId },
+      })
+      if (
+        !item ||
+        !item.isActive ||
+        item.companyId !== companyId ||
+        !warehouse ||
+        !warehouse.isActive ||
+        warehouse.companyId !== companyId
+      ) {
+        return err(
+          new InventoryMovementError('Item and warehouse must be active in the same company')
+        )
+      }
+
+      const selectedScope = scopeMismatch(companyId, options)
+      if (selectedScope) return err(new ScopeForbiddenError(selectedScope, 'warehouse stock'))
+
       const rows = await manager
         .createQueryBuilder(InventoryMovementEntity, 'm')
         .where('m.company_id = :companyId', { companyId })
@@ -180,82 +266,80 @@ export class TypeOrmInventoryService extends InventoryContract {
   async recordMovement(
     input: InventoryMovementInput,
     options?: TransactionOptions
-  ): Promise<Result<InventoryMovementSnapshot, InventoryMovementError>> {
-    return runInTransaction<InventoryMovementSnapshot, InventoryMovementError>(
-      this.movementRepo.manager,
-      options,
-      async (client) => {
-        if (!input.id.trim() || !input.sourceType.trim() || !input.sourceId.trim()) {
-          return err(new InventoryMovementError('id, sourceType, and sourceId are required'))
+  ): Promise<Result<InventoryMovementSnapshot, InventoryMovementError | ScopeForbiddenError>> {
+    return runInTransaction<
+      InventoryMovementSnapshot,
+      InventoryMovementError | ScopeForbiddenError
+    >(this.movementRepo.manager, options, async (client) => {
+      if (!input.id.trim() || !input.sourceType.trim() || !input.sourceId.trim()) {
+        return err(new InventoryMovementError('id, sourceType, and sourceId are required'))
+      }
+
+      if (
+        !/^[A-Z]{3}$/.test(input.currency) ||
+        input.unitCostMinorUnits < 0n ||
+        input.quantityDelta === 0n
+      ) {
+        return err(new InventoryMovementError('currency and unit cost are invalid'))
+      }
+
+      try {
+        await this.lockStock(client, input.companyId, input.itemId, input.warehouseId)
+        const before = await this.stock(input.companyId, input.itemId, input.warehouseId, {
+          client,
+        })
+        if (before.isErr) return err(before.error)
+
+        if (before.value.currency && before.value.currency !== input.currency) {
+          return err(new InventoryMovementError('Movement currency must match stock currency'))
         }
+
+        if (input.quantityDelta < 0n) {
+          if (before.value.quantity + input.quantityDelta < 0n) {
+            return err(new InventoryMovementError('Movement would make stock negative'))
+          }
+          if (input.unitCostMinorUnits !== before.value.averageUnitCostMinorUnits) {
+            return err(new InventoryMovementError('Outbound movement must use moving average cost'))
+          }
+        }
+
+        const item = await client.findOne(InventoryItemEntity, { where: { id: input.itemId } })
+        const warehouse = await client.findOne(InventoryWarehouseEntity, {
+          where: { id: input.warehouseId },
+        })
 
         if (
-          !/^[A-Z]{3}$/.test(input.currency) ||
-          input.unitCostMinorUnits < 0n ||
-          input.quantityDelta === 0n
+          !item ||
+          !warehouse ||
+          !item.isActive ||
+          !warehouse.isActive ||
+          item.companyId !== input.companyId ||
+          warehouse.companyId !== input.companyId
         ) {
-          return err(new InventoryMovementError('currency and unit cost are invalid'))
+          return err(
+            new InventoryMovementError('Item and warehouse must be active in the same company')
+          )
         }
 
-        try {
-          const before = await this.stock(input.companyId, input.itemId, input.warehouseId, {
-            client,
-          })
-          if (before.isErr) return err(before.error)
+        const movement = client.create(InventoryMovementEntity, {
+          id: input.id,
+          companyId: input.companyId,
+          itemId: input.itemId,
+          warehouseId: input.warehouseId,
+          sourceType: input.sourceType,
+          sourceId: input.sourceId,
+          quantityDelta: input.quantityDelta.toString(),
+          unitCostMinorUnits: input.unitCostMinorUnits.toString(),
+          currency: input.currency,
+          occurredAt: input.occurredAt,
+        })
+        await client.save(movement)
 
-          if (before.value.currency && before.value.currency !== input.currency) {
-            return err(new InventoryMovementError('Movement currency must match stock currency'))
-          }
-
-          if (input.quantityDelta < 0n) {
-            if (before.value.quantity + input.quantityDelta < 0n) {
-              return err(new InventoryMovementError('Movement would make stock negative'))
-            }
-            if (input.unitCostMinorUnits !== before.value.averageUnitCostMinorUnits) {
-              return err(
-                new InventoryMovementError('Outbound movement must use moving average cost')
-              )
-            }
-          }
-
-          const item = await client.findOne(InventoryItemEntity, { where: { id: input.itemId } })
-          const warehouse = await client.findOne(InventoryWarehouseEntity, {
-            where: { id: input.warehouseId },
-          })
-
-          if (
-            !item ||
-            !warehouse ||
-            !item.isActive ||
-            !warehouse.isActive ||
-            item.companyId !== input.companyId ||
-            warehouse.companyId !== input.companyId
-          ) {
-            return err(
-              new InventoryMovementError('Item and warehouse must be active in the same company')
-            )
-          }
-
-          const movement = client.create(InventoryMovementEntity, {
-            id: input.id,
-            companyId: input.companyId,
-            itemId: input.itemId,
-            warehouseId: input.warehouseId,
-            sourceType: input.sourceType,
-            sourceId: input.sourceId,
-            quantityDelta: input.quantityDelta.toString(),
-            unitCostMinorUnits: input.unitCostMinorUnits.toString(),
-            currency: input.currency,
-            occurredAt: input.occurredAt,
-          })
-          await client.save(movement)
-
-          return ok(input)
-        } catch {
-          return err(new InventoryMovementError(`Unable to record movement: ${input.id}`))
-        }
+        return ok(input)
+      } catch {
+        return err(new InventoryMovementError(`Unable to record movement: ${input.id}`))
       }
-    )
+    })
   }
 
   async availableStock(
@@ -263,7 +347,7 @@ export class TypeOrmInventoryService extends InventoryContract {
     itemId: string,
     warehouseId: string,
     options?: TransactionOptions
-  ): Promise<Result<InventoryAvailabilitySnapshot, InventoryMovementError>> {
+  ): Promise<Result<InventoryAvailabilitySnapshot, InventoryMovementError | ScopeForbiddenError>> {
     const stockRes = await this.stock(companyId, itemId, warehouseId, options)
     if (stockRes.isErr) return err(stockRes.error)
 
@@ -294,15 +378,21 @@ export class TypeOrmInventoryService extends InventoryContract {
   async reserve(
     input: StockReservationInput,
     options?: TransactionOptions
-  ): Promise<Result<StockReservationSnapshot, InventoryMovementError | InsufficientStockError>> {
+  ): Promise<
+    Result<
+      StockReservationSnapshot,
+      InventoryMovementError | InsufficientStockError | ScopeForbiddenError
+    >
+  > {
     return runInTransaction<
       StockReservationSnapshot,
-      InventoryMovementError | InsufficientStockError
+      InventoryMovementError | InsufficientStockError | ScopeForbiddenError
     >(this.reservationRepo.manager, options, async (client) => {
       if (input.quantity <= 0n) {
         return err(new InventoryMovementError('Reservation quantity must be positive'))
       }
 
+      await this.lockStock(client, input.companyId, input.itemId, input.warehouseId)
       const availRes = await this.availableStock(input.companyId, input.itemId, input.warehouseId, {
         client,
       })
@@ -347,12 +437,22 @@ export class TypeOrmInventoryService extends InventoryContract {
   async releaseReservation(
     id: string,
     options?: TransactionOptions
-  ): Promise<Result<void, InventoryMovementError>> {
-    return runInTransaction<void, InventoryMovementError>(
+  ): Promise<Result<void, InventoryMovementError | ScopeForbiddenError>> {
+    return runInTransaction<void, InventoryMovementError | ScopeForbiddenError>(
       this.reservationRepo.manager,
       options,
       async (client) => {
         const reservation = await client.findOne(StockReservationEntity, { where: { id } })
+        if (reservation) {
+          await this.lockStock(
+            client,
+            reservation.companyId,
+            reservation.itemId,
+            reservation.warehouseId
+          )
+          const selectedScope = scopeMismatch(reservation.companyId, options)
+          if (selectedScope) return err(new ScopeForbiddenError(selectedScope, 'reservation'))
+        }
         if (reservation && reservation.status === 'ACTIVE') {
           reservation.status = 'RELEASED'
           await client.save(reservation)
@@ -360,5 +460,62 @@ export class TypeOrmInventoryService extends InventoryContract {
         return ok(undefined)
       }
     )
+  }
+
+  async consumeReservation(
+    id: string,
+    quantity: bigint,
+    options?: TransactionOptions
+  ): Promise<
+    Result<
+      StockReservationSnapshot,
+      InventoryMovementError | InsufficientStockError | ScopeForbiddenError
+    >
+  > {
+    return runInTransaction<
+      StockReservationSnapshot,
+      InventoryMovementError | InsufficientStockError | ScopeForbiddenError
+    >(this.reservationRepo.manager, options, async (client) => {
+      if (quantity <= 0n) {
+        return err(new InventoryMovementError('Consumed reservation quantity must be positive'))
+      }
+
+      const reservation = await client
+        .createQueryBuilder(StockReservationEntity, 'r')
+        .setLock('pessimistic_write')
+        .where('r.id = :id', { id })
+        .getOne()
+      if (!reservation) {
+        return err(new InventoryMovementError(`Reservation not found: ${id}`))
+      }
+
+      const selectedScope = scopeMismatch(reservation.companyId, options)
+      if (selectedScope) return err(new ScopeForbiddenError(selectedScope, 'reservation'))
+
+      if (reservation.status !== 'ACTIVE') {
+        return err(new InventoryMovementError(`Reservation is not active: ${id}`))
+      }
+
+      const currentQuantity = BigInt(reservation.quantity)
+      if (quantity > currentQuantity) {
+        return err(new InsufficientStockError(reservation.itemId, quantity, currentQuantity))
+      }
+
+      reservation.quantity = (currentQuantity - quantity).toString()
+      reservation.status = quantity === currentQuantity ? 'FULFILLED' : 'ACTIVE'
+      await client.save(reservation)
+
+      return ok({
+        id: reservation.id,
+        companyId: reservation.companyId,
+        itemId: reservation.itemId,
+        warehouseId: reservation.warehouseId,
+        quantity: BigInt(reservation.quantity),
+        status: reservation.status,
+        referenceType: reservation.referenceType,
+        referenceId: reservation.referenceId,
+        createdAt: reservation.createdAt,
+      })
+    })
   }
 }

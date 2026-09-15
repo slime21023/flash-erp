@@ -10,6 +10,7 @@ export type AuditEntryInput = Readonly<{
   beforeValue?: Readonly<Record<string, unknown>>
   afterValue?: Readonly<Record<string, unknown>>
   requestId?: string
+  eventId?: string
 }>
 
 export type AuditEntrySnapshot = Readonly<AuditEntryInput & { id: number; occurredAt: Date }>

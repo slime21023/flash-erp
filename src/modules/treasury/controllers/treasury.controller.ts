@@ -33,12 +33,14 @@ export class TreasuryController {
     return ResultPresenter.handle(res, result, { successStatus: 201 })
   }
 
+  @RequirePermission('treasury.account.read')
   @Get('accounts/:id')
   async getBankAccount(@Param('id') id: string, @Res() res: Response) {
     const result = await this.treasury.getBankAccount(id)
     return ResultPresenter.handle(res, result)
   }
 
+  @RequirePermission('treasury.account.read')
   @Get('accounts')
   async listBankAccounts(@Query('companyId') companyId: string, @Res() res: Response) {
     const result = await this.treasury.listBankAccounts(companyId || '')
@@ -76,6 +78,7 @@ export class TreasuryController {
     return ResultPresenter.handle(res, result)
   }
 
+  @RequirePermission('treasury.payment.read')
   @Get('payments/:id')
   async getPayment(@Param('id') id: string, @Res() res: Response) {
     const result = await this.treasury.getPayment(id)
@@ -113,6 +116,7 @@ export class TreasuryController {
     return ResultPresenter.handle(res, result)
   }
 
+  @RequirePermission('treasury.receipt.read')
   @Get('receipts/:id')
   async getReceipt(@Param('id') id: string, @Res() res: Response) {
     const result = await this.treasury.getReceipt(id)

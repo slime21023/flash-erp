@@ -24,6 +24,8 @@ export class ManufacturingAuditListener {
       action: 'WORK_ORDER_RELEASED',
       entityType: 'WORK_ORDER',
       entityId: event.workOrderId,
+      actorId: event.eventMetadata.actorId,
+      requestId: event.eventMetadata.requestId,
       afterValue: {
         companyId: event.companyId,
         outputItemId: event.outputItemId,
@@ -39,6 +41,8 @@ export class ManufacturingAuditListener {
       action: 'MATERIAL_ISSUED',
       entityType: 'WORK_ORDER',
       entityId: event.workOrderId,
+      actorId: event.eventMetadata.actorId,
+      requestId: event.eventMetadata.requestId,
       afterValue: {
         companyId: event.companyId,
         componentItemId: event.componentItemId,
@@ -55,6 +59,8 @@ export class ManufacturingAuditListener {
       action: 'WORK_ORDER_COMPLETED',
       entityType: 'WORK_ORDER',
       entityId: event.workOrderId,
+      actorId: event.eventMetadata.actorId,
+      requestId: event.eventMetadata.requestId,
       afterValue: {
         companyId: event.companyId,
         outputItemId: event.outputItemId,
@@ -72,6 +78,8 @@ export class ManufacturingAuditListener {
       action: 'OVERHEAD_ALLOCATED',
       entityType: 'COMPANY',
       entityId: event.companyId,
+      actorId: event.eventMetadata.actorId,
+      requestId: event.eventMetadata.requestId,
       afterValue: {
         totalOverheadAmountMinorUnits: event.totalOverheadAmountMinorUnits.toString(),
         workOrderCount: event.workOrderCount,

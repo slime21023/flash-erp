@@ -25,6 +25,8 @@ export class ProcurementAuditListener {
       action: 'GOODS_RECEIVED',
       entityType: 'GOODS_RECEIPT',
       entityId: event.receiptId,
+      actorId: event.eventMetadata.actorId,
+      requestId: event.eventMetadata.requestId,
       afterValue: {
         purchaseOrderId: event.purchaseOrderId,
         companyId: event.companyId,
@@ -40,6 +42,8 @@ export class ProcurementAuditListener {
       action: 'PURCHASE_ORDER_APPROVED',
       entityType: 'PURCHASE_ORDER',
       entityId: event.purchaseOrderId,
+      actorId: event.eventMetadata.actorId,
+      requestId: event.eventMetadata.requestId,
       afterValue: {
         companyId: event.companyId,
         supplierId: event.supplierId,
@@ -54,6 +58,8 @@ export class ProcurementAuditListener {
       action: 'PURCHASE_REQUISITION_APPROVED',
       entityType: 'PURCHASE_REQUISITION',
       entityId: event.requisitionId,
+      actorId: event.eventMetadata.actorId,
+      requestId: event.eventMetadata.requestId,
       afterValue: {
         companyId: event.companyId,
         requesterId: event.requesterId,
@@ -68,6 +74,8 @@ export class ProcurementAuditListener {
       action: 'VENDOR_INVOICE_MATCHED',
       entityType: 'VENDOR_INVOICE',
       entityId: event.invoiceId,
+      actorId: event.eventMetadata.actorId,
+      requestId: event.eventMetadata.requestId,
       afterValue: {
         companyId: event.companyId,
         purchaseOrderId: event.purchaseOrderId,
@@ -82,6 +90,8 @@ export class ProcurementAuditListener {
       action: 'ACCOUNTS_PAYABLE_VOUCHER_CREATED',
       entityType: 'JOURNAL_ENTRY',
       entityId: event.journalEntryId,
+      actorId: event.eventMetadata.actorId,
+      requestId: event.eventMetadata.requestId,
       afterValue: {
         invoiceId: event.invoiceId,
         companyId: event.companyId,

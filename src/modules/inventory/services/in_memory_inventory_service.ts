@@ -109,6 +109,34 @@ export class InMemoryInventoryService extends InventoryContract {
     return ok(undefined)
   }
 
+  async consumeReservation(
+    id: string,
+    quantity: bigint,
+    _options?: TransactionOptions
+  ): Promise<Result<StockReservationSnapshot, InventoryMovementError | InsufficientStockError>> {
+    if (quantity <= 0n) {
+      return err(new InventoryMovementError('Consumed reservation quantity must be positive'))
+    }
+
+    const reservation = this.#reservations.get(id)
+    if (!reservation || reservation.status !== 'ACTIVE') {
+      return err(new InventoryMovementError(`Reservation is not active: ${id}`))
+    }
+
+    if (quantity > reservation.quantity) {
+      return err(new InsufficientStockError(reservation.itemId, quantity, reservation.quantity))
+    }
+
+    const remaining = reservation.quantity - quantity
+    const consumed = Object.freeze({
+      ...reservation,
+      quantity: remaining,
+      status: remaining === 0n ? ('FULFILLED' as const) : ('ACTIVE' as const),
+    })
+    this.#reservations.set(id, consumed)
+    return ok(consumed)
+  }
+
   async registerUnit(
     input: InventoryUnitInput,
     _options?: TransactionOptions
@@ -159,6 +187,30 @@ export class InMemoryInventoryService extends InventoryContract {
 
     this.#warehouses.set(id, { id, companyId, organizationUnitId, code, name })
     return ok({ id, companyId, organizationUnitId, code, name })
+  }
+
+  async findItem(
+    companyId: string,
+    itemId: string,
+    _options?: TransactionOptions
+  ): Promise<Result<InventoryItemInput, InventoryMovementError>> {
+    const item = this.#items.get(itemId)
+    if (!item || item.companyId !== companyId) {
+      return err(new InventoryMovementError('Item must be active in the same company'))
+    }
+    return ok(item)
+  }
+
+  async findWarehouse(
+    companyId: string,
+    warehouseId: string,
+    _options?: TransactionOptions
+  ): Promise<Result<InventoryWarehouseInput, InventoryMovementError>> {
+    const warehouse = this.#warehouses.get(warehouseId)
+    if (!warehouse || warehouse.companyId !== companyId) {
+      return err(new InventoryMovementError('Warehouse must be active in the same company'))
+    }
+    return ok(warehouse)
   }
 
   async stock(

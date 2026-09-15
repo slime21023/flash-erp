@@ -26,6 +26,7 @@ export class InMemoryIdentityService extends IdentityContract {
   readonly #userRoles = new Set<string>() // "userId:roleId"
   readonly #rolePermissions = new Set<string>() // "roleId:permission"
   readonly #userScopes = new Set<string>() // "userId:orgUnitId"
+  readonly #failedLogins = new Map<string, { count: number; blockedUntil: number }>()
 
   assignRole(userId: string, roleId: string) {
     this.#userRoles.add(`${userId}:${roleId}`)
@@ -56,8 +57,8 @@ export class InMemoryIdentityService extends IdentityContract {
       )
     }
 
-    if (password && password.length < 8) {
-      return err(new InvalidIdentityInputError('password must contain at least 8 characters'))
+    if (password && password.length < 12) {
+      return err(new InvalidIdentityInputError('password must contain at least 12 characters'))
     }
 
     if (this.#users.has(id) || [...this.#users.values()].some((u) => u.username === username)) {
@@ -88,10 +89,23 @@ export class InMemoryIdentityService extends IdentityContract {
     const username =
       typeof credentials?.username === 'string' ? credentials.username.trim().toLowerCase() : ''
     const password = typeof credentials?.password === 'string' ? credentials.password : ''
+    if (!username || !password) return err(new AuthenticationFailedError())
+    const failure = this.#failedLogins.get(username)
+    if (failure && failure.blockedUntil > Date.now()) return err(new AuthenticationFailedError())
+    if (failure && failure.blockedUntil > 0 && failure.blockedUntil <= Date.now()) {
+      this.#failedLogins.delete(username)
+    }
+    const attemptCount = (this.#failedLogins.get(username)?.count ?? 0) + 1
+    this.#failedLogins.set(username, {
+      count: attemptCount,
+      blockedUntil: attemptCount >= 5 ? Date.now() + 15 * 60 * 1000 : 0,
+    })
     const user = [...this.#users.values()].find((candidate) => candidate.username === username)
     if (!user || !user.isActive || !(await verifyPassword(password, user.passwordHash))) {
       return err(new AuthenticationFailedError())
     }
+
+    this.#failedLogins.delete(username)
 
     const accessToken = randomBytes(32).toString('base64url')
     const expiresAt = new Date(Date.now() + 8 * 60 * 60 * 1000)
@@ -163,6 +177,9 @@ export class InMemoryIdentityService extends IdentityContract {
       displayName: user.displayName,
       isActive: user.isActive,
       roles: [...this.#userRoles]
+        .filter((value) => value.startsWith(`${user.id}:`))
+        .map((value) => value.slice(user.id.length + 1)),
+      organizationUnitIds: [...this.#userScopes]
         .filter((value) => value.startsWith(`${user.id}:`))
         .map((value) => value.slice(user.id.length + 1)),
     }

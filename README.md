@@ -83,9 +83,9 @@ docker compose up -d
 # - Svelte 管理後台: http://localhost:5173
 # - Swagger API 文檔: http://localhost:3333/api/docs
 
-# 初始化登入帳號（PowerShell）
+# 以 backend container 執行初始化登入帳號（PowerShell）
 $env:ADMIN_PASSWORD = 'change-this-before-use'
-npm run seed:admin
+docker compose run --rm -e ADMIN_PASSWORD=$env:ADMIN_PASSWORD backend node dist/scripts/seed_admin.js
 ```
 
 #### 模式 B：本地開發模式 (Local Development)
@@ -103,6 +103,7 @@ docker compose up -d postgres
 # 4. 執行品質守衛與測試
 npm run architecture:check
 npm test
+npm run test:integration
 
 # 5. 設定一次性 bootstrap 密碼並初始化系統管理員
 $env:ADMIN_PASSWORD = 'change-this-before-use'
@@ -114,6 +115,18 @@ npm run start:dev
 # 7. 啟動前端 Svelte 服務 (Port 5173)
 npm run dev -w frontend
 ```
+
+#### 模式 C：Production（外部 PostgreSQL）
+
+Production compose 不會啟動資料庫容器，請先準備 PostgreSQL 16 或相容的受管資料庫，設定 `.env` 中的 `DB_*` 與精確的 `CORS_ORIGINS`；若 API 不走前端 Nginx 的同源反向代理，再設定 `VITE_API_URL`，再執行：
+
+```bash
+docker compose -f compose.production.yaml config
+docker compose -f compose.production.yaml up -d --build
+curl -fsS https://erp.example.com/ready
+```
+
+備份、還原演練、發版與事故處理請參考 [`docs/operations/production-runbook.md`](docs/operations/production-runbook.md)。Production 登入使用 HttpOnly cookie；前端不會把 bearer token 寫入 localStorage。
 
 ---
 

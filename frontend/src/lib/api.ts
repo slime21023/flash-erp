@@ -1,7 +1,8 @@
 import type { ModuleManifest } from './types.js'
 
-const API_BASE = import.meta.env.VITE_API_URL ?? 'http://localhost:3333'
+export const API_BASE = (import.meta.env.VITE_API_URL ?? '').replace(/\/$/, '')
 const AUTH_STORAGE_KEY = 'flasherp.auth'
+const SESSION_EXPIRED_EVENT = 'flasherp:session-expired'
 
 export interface AuthenticatedUser {
   id: string
@@ -9,42 +10,146 @@ export interface AuthenticatedUser {
   displayName: string
   isActive: boolean
   roles: string[]
+  organizationUnitIds: string[]
 }
 
 export interface AuthSession {
-  accessToken: string
+  accessToken?: string
   expiresAt: string
   user: AuthenticatedUser
 }
 
+export class ApiError extends Error {
+  constructor(
+    readonly status: number,
+    readonly code: string,
+    message: string
+  ) {
+    super(message)
+    this.name = 'ApiError'
+  }
+}
+
+export interface ApiRequestOptions {
+  method?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE'
+  body?: unknown
+  organizationUnitId?: string
+}
+
 export function readAuthSession(): AuthSession | null {
   try {
-    const raw = localStorage.getItem(AUTH_STORAGE_KEY)
+    const raw = sessionStorage.getItem(AUTH_STORAGE_KEY)
     if (!raw) return null
     const session = JSON.parse(raw) as AuthSession
-    if (!session.accessToken || new Date(session.expiresAt) <= new Date()) {
-      localStorage.removeItem(AUTH_STORAGE_KEY)
+    if (!session.user || !session.expiresAt || new Date(session.expiresAt) <= new Date()) {
+      sessionStorage.removeItem(AUTH_STORAGE_KEY)
       return null
     }
-    return session
+    return {
+      ...session,
+      user: {
+        ...session.user,
+        roles: session.user.roles ?? [],
+        organizationUnitIds: session.user.organizationUnitIds ?? [],
+      },
+    }
   } catch {
-    localStorage.removeItem(AUTH_STORAGE_KEY)
+    sessionStorage.removeItem(AUTH_STORAGE_KEY)
     return null
   }
+}
+
+export function clearAuthSession(): void {
+  sessionStorage.removeItem(AUTH_STORAGE_KEY)
+  if (typeof window !== 'undefined') window.dispatchEvent(new Event(SESSION_EXPIRED_EVENT))
+}
+
+function csrfToken(): string | undefined {
+  const value = document.cookie
+    .split('; ')
+    .find((entry) => entry.startsWith('flash_erp_csrf='))
+    ?.slice('flash_erp_csrf='.length)
+  if (!value) return undefined
+  try {
+    return decodeURIComponent(value)
+  } catch {
+    return undefined
+  }
+}
+
+export async function apiRequest<T>(path: string, options: ApiRequestOptions = {}): Promise<T> {
+  const session = readAuthSession()
+  const headers = new Headers({ Accept: 'application/json' })
+  if (options.body !== undefined) headers.set('Content-Type', 'application/json')
+
+  const method = options.method ?? 'GET'
+  if (method !== 'GET') {
+    const csrf = csrfToken()
+    if (csrf) headers.set('x-csrf-token', csrf)
+  }
+
+  const organizationUnitId = options.organizationUnitId ?? session?.user.organizationUnitIds[0]
+  if (organizationUnitId) headers.set('x-org-unit-id', organizationUnitId)
+
+  const res = await fetch(`${API_BASE}${path}`, {
+    method,
+    headers,
+    credentials: 'include',
+    body: options.body === undefined ? undefined : JSON.stringify(options.body),
+  })
+  const payload = await res.json().catch(() => ({}))
+  if (!res.ok) {
+    const error = payload.error ?? {}
+    if (res.status === 401) clearAuthSession()
+    throw new ApiError(res.status, error.code ?? 'HTTP_ERROR', error.message ?? res.statusText)
+  }
+  return (payload.data ?? payload) as T
 }
 
 export async function login(username: string, password: string): Promise<AuthSession> {
   const res = await fetch(`${API_BASE}/identity/login`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
+    credentials: 'include',
     body: JSON.stringify({ username, password }),
   })
   const payload = await res.json().catch(() => ({}))
   if (!res.ok) throw new Error(payload.error?.message ?? '登入失敗')
 
   const session = payload.data ?? payload
-  localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(session))
-  return session as AuthSession
+  const normalized = {
+    ...session,
+    user: {
+      ...session.user,
+      roles: session.user.roles ?? [],
+      organizationUnitIds: session.user.organizationUnitIds ?? [],
+    },
+  } as AuthSession
+  const { accessToken: _accessToken, ...browserSession } = normalized
+  sessionStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(browserSession))
+  return normalized
+}
+
+export async function restoreSession(): Promise<AuthSession | null> {
+  const res = await fetch(`${API_BASE}/identity/session`, { credentials: 'include' })
+  if (res.status === 401) return null
+  if (!res.ok) throw new Error('無法還原登入狀態')
+
+  const payload = await res.json().catch(() => ({}))
+  const user = (payload.data ?? payload) as AuthenticatedUser | null
+  if (!user?.id) return null
+
+  const existing = readAuthSession()
+  const session: AuthSession = {
+    expiresAt: existing?.expiresAt ?? new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString(),
+    user: {
+      ...user,
+      roles: user.roles ?? [],
+      organizationUnitIds: user.organizationUnitIds ?? [],
+    },
+  }
+  sessionStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(session))
+  return session
 }
 
 export async function logout(): Promise<void> {
@@ -53,11 +158,12 @@ export async function logout(): Promise<void> {
     if (session) {
       await fetch(`${API_BASE}/identity/logout`, {
         method: 'POST',
-        headers: { Authorization: `Bearer ${session.accessToken}` },
+        headers: csrfToken() ? { 'x-csrf-token': csrfToken()! } : undefined,
+        credentials: 'include',
       })
     }
   } finally {
-    localStorage.removeItem(AUTH_STORAGE_KEY)
+    sessionStorage.removeItem(AUTH_STORAGE_KEY)
   }
 }
 
@@ -97,7 +203,7 @@ export async function fetchModules(): Promise<{
           summary: '本地帳號密碼雜湊認證、角色權限授權與組織權限作用域隔離',
           category: 'System',
           author: 'FlashERP Core Team',
-          dependsOn: ['organization'],
+          dependsOn: ['organization', 'audit'],
           installable: true,
           autoInstall: true,
           icon: 'ShieldCheck',

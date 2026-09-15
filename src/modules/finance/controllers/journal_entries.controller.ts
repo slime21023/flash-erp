@@ -56,6 +56,7 @@ export class JournalEntriesController {
     return ResultPresenter.handle(res, result, { successStatus: 201 })
   }
 
+  @RequirePermission('finance.report.read')
   @Get('general-ledger')
   async ledger(
     @Query('companyId') companyId: string,
@@ -67,6 +68,7 @@ export class JournalEntriesController {
     return ResultPresenter.handle(res, result)
   }
 
+  @RequirePermission('finance.report.read')
   @Get('trial-balance')
   async trialBalance(
     @Query('companyId') companyId: string,

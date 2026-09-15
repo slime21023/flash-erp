@@ -121,6 +121,22 @@ test('treasury service handles payment voucher lifecycle, insufficient funds che
     assert.equal(postOver.error instanceof InsufficientFundsError, true)
   }
 
+  const duplicateLines = await treasury.createPayment({
+    id: 'pmt-duplicate-lines',
+    companyId: 'comp-1',
+    bankAccountId: 'bank-01',
+    paymentNumber: 'PMT-2026-DUP',
+    paymentDate: '2026-09-10',
+    beneficiaryType: 'SUPPLIER',
+    beneficiaryId: 'supp-acme',
+    amountMinorUnits: 20_000n,
+    lines: [
+      { invoiceId: 'inv-acme-1002', appliedAmountMinorUnits: 10_000n },
+      { invoiceId: 'inv-acme-1002', appliedAmountMinorUnits: 10_000n },
+    ],
+  })
+  assert.equal(duplicateLines.isErr, true)
+
   // 3. Create and post valid payment (30,000 <= 50,000)
   const validPmt = await treasury.createPayment({
     id: 'pmt-valid',
@@ -211,6 +227,22 @@ test('treasury service handles receipt voucher lifecycle, balance increment, and
     ],
   })
   assert.equal(rcpt.isOk, true)
+
+  const duplicateReceiptLines = await treasury.createReceipt({
+    id: 'rcpt-duplicate-lines',
+    companyId: 'comp-1',
+    bankAccountId: 'bank-receipt',
+    receiptNumber: 'RCPT-2026-DUP',
+    receiptDate: '2026-09-10',
+    payerType: 'CUSTOMER',
+    payerId: 'cust-store-1',
+    amountMinorUnits: 20_000n,
+    lines: [
+      { referenceId: 'ship-duplicate', appliedAmountMinorUnits: 10_000n },
+      { referenceId: 'ship-duplicate', appliedAmountMinorUnits: 10_000n },
+    ],
+  })
+  assert.equal(duplicateReceiptLines.isErr, true)
 
   const postRcpt = await treasury.postReceipt('rcpt-01')
   assert.equal(postRcpt.isOk, true)
@@ -402,17 +434,22 @@ test('PBT: SettlementEngine strictly satisfies conservation and monotonicity inv
         }))
 
         const sumBalances = balances.reduce((sum, b) => sum + b, 0n)
-        const result = SettlementEngine.allocateSettlement(fund, docs)
+        const result = SettlementEngine.tryAllocateSettlement(fund, docs)
+        assert.equal(result.isOk, true)
+        if (result.isErr) return
 
         // Invariant 1: Total allocated must equal min(fund, sumBalances)
         const expectedAllocated = fund < sumBalances ? fund : sumBalances
-        assert.equal(result.totalAllocatedMinorUnits, expectedAllocated)
+        assert.equal(result.value.totalAllocatedMinorUnits, expectedAllocated)
 
         // Invariant 2: Total allocated + unallocated == fund
-        assert.equal(result.totalAllocatedMinorUnits + result.unallocatedMinorUnits, fund)
+        assert.equal(
+          result.value.totalAllocatedMinorUnits + result.value.unallocatedMinorUnits,
+          fund
+        )
 
         // Invariant 3: For each document: applied <= original, and original - applied == newRemaining >= 0
-        for (const alloc of result.allocations) {
+        for (const alloc of result.value.allocations) {
           assert.equal(alloc.appliedAmountMinorUnits <= alloc.originalBalanceMinorUnits, true)
           assert.equal(
             alloc.originalBalanceMinorUnits - alloc.appliedAmountMinorUnits,

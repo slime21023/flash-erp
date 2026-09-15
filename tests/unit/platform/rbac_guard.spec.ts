@@ -54,7 +54,7 @@ test('RbacGuard allows requests when no permission is required', async () => {
 
 test('RbacGuard rejects requests with missing user identification', async () => {
   const authorizer = new MockAuthorizer()
-  const { reflector, context } = createMockContext('CAN_APPROVE', { headers: {} })
+  const { reflector, context } = createMockContext('CAN_APPROVE', { headers: {}, user: undefined })
   const guard = new RbacGuard(reflector, authorizer)
 
   await assert.rejects(async () => {
@@ -65,7 +65,8 @@ test('RbacGuard rejects requests with missing user identification', async () => 
 test('RbacGuard rejects requests with missing organization unit scope', async () => {
   const authorizer = new MockAuthorizer()
   const { reflector, context } = createMockContext('CAN_APPROVE', {
-    headers: { 'x-user-id': 'admin' },
+    headers: {},
+    user: { id: 'admin' },
   })
   const guard = new RbacGuard(reflector, authorizer)
 
@@ -78,9 +79,9 @@ test('RbacGuard allows authorized user within valid organization scope', async (
   const authorizer = new MockAuthorizer()
   const { reflector, context } = createMockContext('CAN_APPROVE', {
     headers: {
-      'x-user-id': 'admin',
       'x-org-unit-id': 'org-1',
     },
+    user: { id: 'admin' },
   })
   const guard = new RbacGuard(reflector, authorizer)
 
@@ -92,9 +93,9 @@ test('RbacGuard denies unauthorized user or invalid permission', async () => {
   const authorizer = new MockAuthorizer()
   const { reflector, context } = createMockContext('CAN_APPROVE', {
     headers: {
-      'x-user-id': 'unauthorized_user',
       'x-org-unit-id': 'org-1',
     },
+    user: { id: 'unauthorized_user' },
   })
   const guard = new RbacGuard(reflector, authorizer)
 

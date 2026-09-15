@@ -23,6 +23,8 @@ export class TreasuryAuditListener {
       action: 'PAYMENT_PROCESSED',
       entityType: 'PAYMENT_VOUCHER',
       entityId: event.paymentId,
+      actorId: event.eventMetadata.actorId,
+      requestId: event.eventMetadata.requestId,
       afterValue: {
         companyId: event.companyId,
         bankAccountId: event.bankAccountId,
@@ -40,6 +42,8 @@ export class TreasuryAuditListener {
       action: 'RECEIPT_PROCESSED',
       entityType: 'RECEIPT_VOUCHER',
       entityId: event.receiptId,
+      actorId: event.eventMetadata.actorId,
+      requestId: event.eventMetadata.requestId,
       afterValue: {
         companyId: event.companyId,
         bankAccountId: event.bankAccountId,
@@ -57,6 +61,8 @@ export class TreasuryAuditListener {
       action: 'BANK_STATEMENT_RECONCILED',
       entityType: 'BANK_STATEMENT',
       entityId: event.statementId,
+      actorId: event.eventMetadata.actorId,
+      requestId: event.eventMetadata.requestId,
       afterValue: {
         bankAccountId: event.bankAccountId,
         matchedCount: event.matchedCount,

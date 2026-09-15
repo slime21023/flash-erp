@@ -24,6 +24,7 @@ export class SalesController {
     return ResultPresenter.handle(res, result, { successStatus: 201 })
   }
 
+  @RequirePermission('sales.customer.read')
   @Get('customers/:id/credit-check')
   async checkCredit(
     @Param('id') customerId: string,
@@ -32,6 +33,13 @@ export class SalesController {
   ) {
     const additional = additionalAmount ? BigInt(additionalAmount) : 0n
     const result = await this.sales.checkCustomerCredit(customerId, additional)
+    return ResultPresenter.handle(res, result)
+  }
+
+  @RequirePermission('sales.customer.read')
+  @Get('customers/:id')
+  async getCustomer(@Param('id') id: string, @Res() res: Response) {
+    const result = await this.sales.getCustomer(id)
     return ResultPresenter.handle(res, result)
   }
 
@@ -54,6 +62,13 @@ export class SalesController {
       })),
     })
     return ResultPresenter.handle(res, result, { successStatus: 201 })
+  }
+
+  @RequirePermission('sales.order.read')
+  @Get('orders/:id')
+  async getSalesOrder(@Param('id') id: string, @Res() res: Response) {
+    const result = await this.sales.getSalesOrder(id)
+    return ResultPresenter.handle(res, result)
   }
 
   @RequirePermission('sales.order.approve')

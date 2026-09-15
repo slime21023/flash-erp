@@ -11,7 +11,13 @@ import { UserOrganizationScopeEntity } from './entities/user_organization_scope.
 import { TypeOrmIdentityService } from './services/typeorm_identity_service.js'
 import { IdentityController } from './controllers/identity.controller.js'
 
-import { Authenticator, AuthGuard, Authorizer, RbacGuard } from '@platform/security/index.js'
+import {
+  Authenticator,
+  AuthGuard,
+  Authorizer,
+  CsrfGuard,
+  RbacGuard,
+} from '@platform/security/index.js'
 
 @Module({
   imports: [
@@ -41,7 +47,8 @@ import { Authenticator, AuthGuard, Authorizer, RbacGuard } from '@platform/secur
     },
     AuthGuard,
     RbacGuard,
+    CsrfGuard,
   ],
-  exports: [IdentityContract, Authorizer, Authenticator, AuthGuard, RbacGuard],
+  exports: [IdentityContract, Authorizer, Authenticator, AuthGuard, RbacGuard, CsrfGuard],
 })
 export class IdentityModule {}

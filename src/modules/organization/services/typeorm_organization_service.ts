@@ -4,6 +4,8 @@ import { Repository } from 'typeorm'
 import { err, ok } from '@platform/fp/index.js'
 import type { Result } from '@platform/fp/index.js'
 import type { TransactionOptions } from '@platform/persistence/index.js'
+import { scopeMismatch } from '@platform/context/index.js'
+import { ScopeForbiddenError } from '@platform/security/index.js'
 import {
   InvalidOrganizationUnitError,
   OrganizationContract,
@@ -56,6 +58,11 @@ export class TypeOrmOrganizationService extends OrganizationContract {
     }
 
     const parentId = input.parentId?.trim() || null
+    const selectedScope = scopeMismatch(parentId ?? id, options)
+    if (selectedScope) {
+      return err(new ScopeForbiddenError(selectedScope, 'organization unit'))
+    }
+
     let parent: OrganizationUnitEntity | null = null
 
     if (parentId !== null) {
@@ -90,7 +97,14 @@ export class TypeOrmOrganizationService extends OrganizationContract {
   async findUnit(
     id: string,
     options?: TransactionOptions
-  ): Promise<Result<OrganizationUnitSnapshot, OrganizationUnitNotFoundError>> {
+  ): Promise<
+    Result<OrganizationUnitSnapshot, OrganizationUnitNotFoundError | ScopeForbiddenError>
+  > {
+    const selectedScope = scopeMismatch(id.trim(), options)
+    if (selectedScope) {
+      return err(new ScopeForbiddenError(selectedScope, 'organization unit'))
+    }
+
     const manager = options?.client ?? this.repo.manager
     const entity = await manager.findOne(OrganizationUnitEntity, { where: { id } })
     return entity

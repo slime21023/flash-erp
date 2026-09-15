@@ -238,6 +238,15 @@ test('procurement service propagates inventory error when goods receipt movement
     name: 'Supplier 2',
   })
 
+  await inventoryService.registerUnit({ id: 'u-pcs', code: 'PCS', name: 'Pieces' })
+  await inventoryService.registerItem({
+    id: 'item-registered',
+    companyId: 'comp-2',
+    sku: 'ITEM-1',
+    name: 'Registered item',
+    unitId: 'u-pcs',
+  })
+
   await procurementService.createPurchaseOrder({
     id: 'po-2001',
     companyId: 'comp-2',
@@ -245,7 +254,7 @@ test('procurement service propagates inventory error when goods receipt movement
     number: 'PO-2026-002',
     lines: [
       {
-        itemId: 'item-unregistered',
+        itemId: 'item-registered',
         orderedQuantity: 10n,
         unitCostMinorUnits: 100n,
         currency: 'TWD',
@@ -266,7 +275,7 @@ test('procurement service propagates inventory error when goods receipt movement
   assert.equal(failedReceipt.isErr, true)
   if (failedReceipt.isErr) {
     assert.equal(failedReceipt.error.code, 'PROCUREMENT_ERROR')
-    assert.match(failedReceipt.error.message, /Inventory movement failed/)
+    assert.match(failedReceipt.error.message, /Warehouse must be active/)
   }
 })
 

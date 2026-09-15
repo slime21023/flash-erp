@@ -1,8 +1,10 @@
 import { err, ok } from '@platform/fp/index.js'
 import type { Result } from '@platform/fp/index.js'
 import type { TransactionOptions } from '@platform/persistence/index.js'
+import { createHash } from 'node:crypto'
 import { Money } from '@platform/kernel/index.js'
 import type { FinanceContract, JournalLine } from '@modules/finance/contracts/index.js'
+import type { SalesContract } from '@modules/sales/contracts/index.js'
 import type { EventEmitter2 } from '@nestjs/event-emitter'
 import {
   BankAccountAlreadyExistsError,
@@ -31,6 +33,16 @@ import {
 } from '../contracts/index.js'
 import { BankReconciliationMatcher } from './bank_reconciliation_matcher.js'
 
+function stableReference(prefix: string, ...parts: string[]): string {
+  const digest = createHash('sha256').update(parts.join('\0')).digest('hex')
+  return `${prefix}-${digest.slice(0, 48)}`
+}
+
+function boundedReference(prefix: string, value: string): string {
+  const plain = `${prefix}-${value}`
+  return plain.length <= 64 ? plain : stableReference(prefix, value)
+}
+
 export class InMemoryTreasuryService extends TreasuryContract {
   readonly #bankAccounts = new Map<string, BankAccountSnapshot>()
   readonly #payments = new Map<string, PaymentVoucherSnapshot>()
@@ -39,7 +51,8 @@ export class InMemoryTreasuryService extends TreasuryContract {
 
   constructor(
     private readonly finance?: FinanceContract,
-    private readonly eventEmitter?: EventEmitter2
+    private readonly eventEmitter?: EventEmitter2,
+    private readonly sales?: SalesContract
   ) {
     super()
   }
@@ -55,6 +68,7 @@ export class InMemoryTreasuryService extends TreasuryContract {
     const bankName = input.bankName.trim()
     const accountName = input.accountName.trim()
     const glAccountId = input.glAccountId.trim()
+    const currency = (input.currency || 'TWD').trim().toUpperCase()
 
     if (
       !id ||
@@ -63,9 +77,14 @@ export class InMemoryTreasuryService extends TreasuryContract {
       !bankCode ||
       !bankName ||
       !accountName ||
-      !glAccountId
+      !glAccountId ||
+      !/^[A-Z]{3}$/.test(currency)
     ) {
       return err(new TreasuryError('All bank account fields are required'))
+    }
+
+    if ((input.initialBalanceMinorUnits ?? 0n) < 0n) {
+      return err(new TreasuryError('Initial bank balance cannot be negative'))
     }
 
     if (
@@ -84,7 +103,7 @@ export class InMemoryTreasuryService extends TreasuryContract {
       bankCode,
       bankName,
       accountName,
-      currency: input.currency || 'TWD',
+      currency,
       glAccountId,
       currentBalanceMinorUnits: input.initialBalanceMinorUnits ?? 0n,
       isActive: true,
@@ -132,22 +151,52 @@ export class InMemoryTreasuryService extends TreasuryContract {
       )
     }
 
+    if (
+      this.#payments.has(id) ||
+      [...this.#payments.values()].some(
+        (payment) => payment.companyId === companyId && payment.paymentNumber === paymentNumber
+      )
+    ) {
+      return err(new TreasuryError(`Payment already exists: ${id}`))
+    }
+
     if (input.amountMinorUnits <= 0n) {
       return err(new TreasuryError('Payment amount must be greater than zero'))
     }
 
+    const lines = (input.lines ?? []).map((line) =>
+      Object.freeze({
+        invoiceId: line.invoiceId.trim(),
+        appliedAmountMinorUnits: line.appliedAmountMinorUnits,
+        memo: line.memo,
+      })
+    )
+    const lineIds = new Set(lines.map((line) => line.invoiceId))
+    if (
+      lines.some((line) => !line.invoiceId || line.appliedAmountMinorUnits <= 0n) ||
+      lineIds.size !== lines.length ||
+      (lines.length > 0 &&
+        lines.reduce((sum, line) => sum + line.appliedAmountMinorUnits, 0n) !==
+          input.amountMinorUnits)
+    ) {
+      return err(
+        new TreasuryError('Payment lines must be unique, positive, and equal payment amount')
+      )
+    }
     const bankAccount = this.#bankAccounts.get(bankAccountId)
     if (!bankAccount) {
       return err(new BankAccountNotFoundError(bankAccountId))
     }
-
-    const lines = (input.lines ?? []).map((l) =>
-      Object.freeze({
-        invoiceId: l.invoiceId,
-        appliedAmountMinorUnits: l.appliedAmountMinorUnits,
-        memo: l.memo,
-      })
-    )
+    const currency = (input.currency || bankAccount.currency).trim().toUpperCase()
+    if (
+      bankAccount.companyId !== companyId ||
+      !bankAccount.isActive ||
+      bankAccount.currency !== currency
+    ) {
+      return err(
+        new TreasuryError('Bank account must be active, in the same company, and currency')
+      )
+    }
 
     const payment: PaymentVoucherSnapshot = Object.freeze({
       id,
@@ -157,7 +206,7 @@ export class InMemoryTreasuryService extends TreasuryContract {
       paymentDate,
       beneficiaryType: input.beneficiaryType,
       beneficiaryId,
-      currency: input.currency || bankAccount.currency,
+      currency,
       amountMinorUnits: input.amountMinorUnits,
       status: 'DRAFT',
       memo: input.memo,
@@ -194,6 +243,13 @@ export class InMemoryTreasuryService extends TreasuryContract {
     if (!bankAccount) {
       return err(new BankAccountNotFoundError(payment.bankAccountId))
     }
+    if (
+      bankAccount.companyId !== payment.companyId ||
+      !bankAccount.isActive ||
+      bankAccount.currency !== payment.currency
+    ) {
+      return err(new TreasuryError('Payment bank account company or currency mismatch'))
+    }
 
     if (bankAccount.currentBalanceMinorUnits < payment.amountMinorUnits) {
       return err(
@@ -205,16 +261,10 @@ export class InMemoryTreasuryService extends TreasuryContract {
       )
     }
 
-    // 1. Deduct bank balance
-    this.#bankAccounts.set(bankAccount.id, {
-      ...bankAccount,
-      currentBalanceMinorUnits: bankAccount.currentBalanceMinorUnits - payment.amountMinorUnits,
-    })
-
-    // 2. Create Double-Entry Accounting Voucher in Finance
+    // Create the accounting voucher before mutating the in-memory balance.
     let journalEntryId: string | undefined
     if (this.finance) {
-      journalEntryId = `je-pmt-${payment.id}`
+      journalEntryId = boundedReference('je-pmt', payment.id)
       const zeroRes = Money.zero(payment.currency)
       const amtRes = Money.fromMinorUnits(payment.amountMinorUnits, payment.currency)
       if (zeroRes.isOk && amtRes.isOk) {
@@ -234,19 +284,27 @@ export class InMemoryTreasuryService extends TreasuryContract {
             memo: `Bank disbursement for ${payment.paymentNumber}`,
           },
         ]
-        await this.finance.createDraft(
+        const draftRes = await this.finance.createDraft(
           {
             id: journalEntryId,
             companyId: payment.companyId,
-            number: `JE-PMT-${payment.paymentNumber}`,
+            number: boundedReference('JE-PMT', payment.paymentNumber),
             accountingDate: payment.paymentDate,
             memo: payment.memo || `Payment Voucher ${payment.paymentNumber}`,
             lines,
           },
           options
         )
+        if (draftRes.isErr) return err(new TreasuryError(draftRes.error.message))
+        const postRes = await this.finance.postDraft(journalEntryId, undefined, options)
+        if (postRes.isErr) return err(new TreasuryError(postRes.error.message))
       }
     }
+
+    this.#bankAccounts.set(bankAccount.id, {
+      ...bankAccount,
+      currentBalanceMinorUnits: bankAccount.currentBalanceMinorUnits - payment.amountMinorUnits,
+    })
 
     const posted: PaymentVoucherSnapshot = Object.freeze({
       ...payment,
@@ -300,22 +358,52 @@ export class InMemoryTreasuryService extends TreasuryContract {
       )
     }
 
+    if (
+      this.#receipts.has(id) ||
+      [...this.#receipts.values()].some(
+        (receipt) => receipt.companyId === companyId && receipt.receiptNumber === receiptNumber
+      )
+    ) {
+      return err(new TreasuryError(`Receipt already exists: ${id}`))
+    }
+
     if (input.amountMinorUnits <= 0n) {
       return err(new TreasuryError('Receipt amount must be greater than zero'))
     }
 
+    const lines = (input.lines ?? []).map((line) =>
+      Object.freeze({
+        referenceId: line.referenceId.trim(),
+        appliedAmountMinorUnits: line.appliedAmountMinorUnits,
+        memo: line.memo,
+      })
+    )
+    const lineIds = new Set(lines.map((line) => line.referenceId))
+    if (
+      lines.some((line) => !line.referenceId || line.appliedAmountMinorUnits <= 0n) ||
+      lineIds.size !== lines.length ||
+      (lines.length > 0 &&
+        lines.reduce((sum, line) => sum + line.appliedAmountMinorUnits, 0n) !==
+          input.amountMinorUnits)
+    ) {
+      return err(
+        new TreasuryError('Receipt lines must be unique, positive, and equal receipt amount')
+      )
+    }
     const bankAccount = this.#bankAccounts.get(bankAccountId)
     if (!bankAccount) {
       return err(new BankAccountNotFoundError(bankAccountId))
     }
-
-    const lines = (input.lines ?? []).map((l) =>
-      Object.freeze({
-        referenceId: l.referenceId,
-        appliedAmountMinorUnits: l.appliedAmountMinorUnits,
-        memo: l.memo,
-      })
-    )
+    const currency = (input.currency || bankAccount.currency).trim().toUpperCase()
+    if (
+      bankAccount.companyId !== companyId ||
+      !bankAccount.isActive ||
+      bankAccount.currency !== currency
+    ) {
+      return err(
+        new TreasuryError('Bank account must be active, in the same company, and currency')
+      )
+    }
 
     const receipt: ReceiptVoucherSnapshot = Object.freeze({
       id,
@@ -325,7 +413,7 @@ export class InMemoryTreasuryService extends TreasuryContract {
       receiptDate,
       payerType: input.payerType,
       payerId,
-      currency: input.currency || bankAccount.currency,
+      currency,
       amountMinorUnits: input.amountMinorUnits,
       status: 'DRAFT',
       memo: input.memo,
@@ -358,17 +446,31 @@ export class InMemoryTreasuryService extends TreasuryContract {
     if (!bankAccount) {
       return err(new BankAccountNotFoundError(receipt.bankAccountId))
     }
+    if (
+      bankAccount.companyId !== receipt.companyId ||
+      !bankAccount.isActive ||
+      bankAccount.currency !== receipt.currency
+    ) {
+      return err(new TreasuryError('Receipt bank account company or currency mismatch'))
+    }
 
-    // 1. Increase bank balance
-    this.#bankAccounts.set(bankAccount.id, {
-      ...bankAccount,
-      currentBalanceMinorUnits: bankAccount.currentBalanceMinorUnits + receipt.amountMinorUnits,
-    })
+    if (this.sales && receipt.payerType === 'CUSTOMER') {
+      const customerRes = await this.sales.getCustomer(receipt.payerId, options)
+      if (
+        customerRes.isErr ||
+        customerRes.value.companyId !== receipt.companyId ||
+        !customerRes.value.isActive ||
+        customerRes.value.currency !== receipt.currency ||
+        customerRes.value.currentOutstandingMinorUnits < receipt.amountMinorUnits
+      ) {
+        return err(new TreasuryError('Customer receivable settlement is invalid'))
+      }
+    }
 
-    // 2. Create Double-Entry Accounting Voucher in Finance
+    // Create the accounting voucher before mutating the in-memory balance.
     let journalEntryId: string | undefined
     if (this.finance) {
-      journalEntryId = `je-rcpt-${receipt.id}`
+      journalEntryId = boundedReference('je-rcpt', receipt.id)
       const zeroRes = Money.zero(receipt.currency)
       const amtRes = Money.fromMinorUnits(receipt.amountMinorUnits, receipt.currency)
       if (zeroRes.isOk && amtRes.isOk) {
@@ -388,19 +490,41 @@ export class InMemoryTreasuryService extends TreasuryContract {
             memo: `Customer AR settlement for ${receipt.receiptNumber}`,
           },
         ]
-        await this.finance.createDraft(
+        const draftRes = await this.finance.createDraft(
           {
             id: journalEntryId,
             companyId: receipt.companyId,
-            number: `JE-RCPT-${receipt.receiptNumber}`,
+            number: boundedReference('JE-RCPT', receipt.receiptNumber),
             accountingDate: receipt.receiptDate,
             memo: receipt.memo || `Receipt Voucher ${receipt.receiptNumber}`,
             lines,
           },
           options
         )
+        if (draftRes.isErr) return err(new TreasuryError(draftRes.error.message))
+        const postRes = await this.finance.postDraft(journalEntryId, undefined, options)
+        if (postRes.isErr) return err(new TreasuryError(postRes.error.message))
       }
     }
+
+    if (this.sales && receipt.payerType === 'CUSTOMER') {
+      const settlementRes = await this.sales.settleCustomerReceivable(
+        {
+          companyId: receipt.companyId,
+          customerId: receipt.payerId,
+          amountMinorUnits: receipt.amountMinorUnits,
+          currency: receipt.currency,
+          referenceId: receipt.id,
+        },
+        options
+      )
+      if (settlementRes.isErr) return err(new TreasuryError(settlementRes.error.message))
+    }
+
+    this.#bankAccounts.set(bankAccount.id, {
+      ...bankAccount,
+      currentBalanceMinorUnits: bankAccount.currentBalanceMinorUnits + receipt.amountMinorUnits,
+    })
 
     const posted: ReceiptVoucherSnapshot = Object.freeze({
       ...receipt,
