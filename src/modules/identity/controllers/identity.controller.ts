@@ -1,6 +1,7 @@
-import { Body, Controller, Get, Post, Req, Res } from '@nestjs/common'
+import { Controller, Req, Res } from '@nestjs/common'
+import { Implement, implement } from '@orpc/nest'
 import type { Response } from 'express'
-import { ResultPresenter } from '@platform/http/index.js'
+import { unwrapResult } from '@platform/http/result_adapter.js'
 import {
   clearCsrfCookie,
   clearSessionCookie,
@@ -9,46 +10,53 @@ import {
   Public,
   RequirePermission,
   sessionCookie,
+  type AuthenticatedPrincipal,
 } from '@platform/security/index.js'
 import { IdentityContract } from '../contracts/index.js'
-import { LoginDto } from '../dto/login.dto.js'
-import { RegisterLocalUserDto } from '../dto/register_local_user.dto.js'
+import { identityApiContract } from '../contracts/identity_api_contract.js'
 
-@Controller('identity')
+@Controller()
 export class IdentityController {
   constructor(private readonly identity: IdentityContract) {}
 
   @Public()
-  @Post('login')
-  async login(@Body() dto: LoginDto, @Res() res: Response) {
-    const result = await this.identity.login(dto)
-    if (result.isOk) {
-      res.setHeader('Set-Cookie', [
-        sessionCookie(result.value.accessToken),
-        csrfCookie(newCsrfToken()),
-      ])
-    }
-    return ResultPresenter.handle(res, result, {
-      statusOverrides: { AUTHENTICATION_FAILED: 401 },
+  @Implement(identityApiContract.login)
+  login(@Res() response: Response) {
+    return implement(identityApiContract.login).handler(async ({ input }) => {
+      const result = await this.identity.login(input)
+      if (result.isOk) {
+        response.setHeader('Set-Cookie', [
+          sessionCookie(result.value.accessToken),
+          csrfCookie(newCsrfToken()),
+        ])
+      }
+      return unwrapResult(result)
     })
   }
 
-  @Get('session')
-  session(@Req() request: { user?: unknown }) {
-    return { data: request.user }
+  @Implement(identityApiContract.session)
+  session(@Req() request: { user: AuthenticatedPrincipal }) {
+    return implement(identityApiContract.session).handler(() => ({
+      ...request.user,
+      roles: [...request.user.roles],
+      organizationUnitIds: [...request.user.organizationUnitIds],
+    }))
   }
 
   @RequirePermission('identity.user.create')
-  @Post('users')
-  async register(@Body() dto: RegisterLocalUserDto, @Res() res: Response) {
-    const result = await this.identity.registerLocalUser(dto)
-    return ResultPresenter.handle(res, result, { successStatus: 201 })
+  @Implement(identityApiContract.register)
+  register() {
+    return implement(identityApiContract.register).handler(async ({ input }) =>
+      unwrapResult(await this.identity.registerLocalUser(input))
+    )
   }
 
-  @Post('logout')
-  async logout(@Req() request: { authToken?: string }, @Res() res: Response) {
-    const result = await this.identity.logout(request.authToken ?? '')
-    res.setHeader('Set-Cookie', [clearSessionCookie(), clearCsrfCookie()])
-    return ResultPresenter.handle(res, result)
+  @Implement(identityApiContract.logout)
+  logout(@Req() request: { authToken: string }, @Res() response: Response) {
+    return implement(identityApiContract.logout).handler(async () => {
+      const result = await this.identity.logout(request.authToken)
+      response.setHeader('Set-Cookie', [clearSessionCookie(), clearCsrfCookie()])
+      return unwrapResult(result)
+    })
   }
 }

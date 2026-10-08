@@ -8,7 +8,6 @@ const moduleDirectories = [
   'services',
   'entities',
   'controllers',
-  'dto',
   'events',
   'listeners',
 ] as const
@@ -46,6 +45,13 @@ async function run() {
 
   const contractStub = `export abstract class ${pascalName}Contract {}\n`
   await writeFile(contractsIndexPath, contractStub, { flag: 'wx' }).catch(() => {})
+
+  // Add procedures with shared API schemas when this module exposes HTTP endpoints.
+  const apiContractPath = join(targetDir, 'contracts', `${moduleName}_api_contract.ts`)
+  const apiName = pascalName.charAt(0).toLowerCase() + pascalName.slice(1)
+  await writeFile(apiContractPath, `export const ${apiName}ApiContract = {}\n`, {
+    flag: 'wx',
+  }).catch(() => {})
 
   // Create default <module_name>.module.ts if it doesn't exist
   const moduleFilePath = join(targetDir, `${moduleName}.module.ts`)

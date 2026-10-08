@@ -1,15 +1,6 @@
-export interface ModuleManifest {
-  id: string
-  name: string
-  version: string
-  summary: string
-  category: string
-  author: string
-  dependsOn: string[]
-  installable: boolean
-  autoInstall: boolean
-  icon?: string
-}
+import type { Api } from './api.js'
+
+export type ModuleManifest = Awaited<ReturnType<Api['system']['getModules']>>['modules'][number]
 
 export type ActiveAppId =
   | 'dashboard'

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { Grid3X3, LogOut } from 'lucide-svelte'
   import type { AuthenticatedUser } from '../api.js'
   import type { ActiveAppId } from '../types.js'
 
@@ -24,64 +25,49 @@
   }
 </script>
 
-<header class="bg-slate-900 text-white h-14 px-4 flex items-center justify-between shadow-md border-b border-slate-800 select-none">
-  <div class="flex items-center space-x-3">
-    <!-- Odoo Style 9-dot Grid App Switcher Button -->
-    <button
-      onclick={onToggleSwitcher}
-      class="p-2 rounded-lg hover:bg-slate-800 text-slate-200 hover:text-white transition flex items-center justify-center focus:outline-none focus:ring-2 focus:ring-indigo-500"
-      title="切換應用程式 (App Switcher)"
-      aria-label="App Switcher"
-    >
-      <div class="grid grid-cols-3 gap-1 w-5 h-5">
-        <span class="w-1.5 h-1.5 rounded-full {isSwitcherOpen ? 'bg-indigo-400' : 'bg-slate-300'}"></span>
-        <span class="w-1.5 h-1.5 rounded-full {isSwitcherOpen ? 'bg-indigo-400' : 'bg-slate-300'}"></span>
-        <span class="w-1.5 h-1.5 rounded-full {isSwitcherOpen ? 'bg-indigo-400' : 'bg-slate-300'}"></span>
-        <span class="w-1.5 h-1.5 rounded-full {isSwitcherOpen ? 'bg-indigo-400' : 'bg-slate-300'}"></span>
-        <span class="w-1.5 h-1.5 rounded-full {isSwitcherOpen ? 'bg-indigo-400' : 'bg-slate-300'}"></span>
-        <span class="w-1.5 h-1.5 rounded-full {isSwitcherOpen ? 'bg-indigo-400' : 'bg-slate-300'}"></span>
-        <span class="w-1.5 h-1.5 rounded-full {isSwitcherOpen ? 'bg-indigo-400' : 'bg-slate-300'}"></span>
-        <span class="w-1.5 h-1.5 rounded-full {isSwitcherOpen ? 'bg-indigo-400' : 'bg-slate-300'}"></span>
-        <span class="w-1.5 h-1.5 rounded-full {isSwitcherOpen ? 'bg-indigo-400' : 'bg-slate-300'}"></span>
-      </div>
-    </button>
-
-    <!-- Brand & Active App Title -->
-    <div class="flex items-center space-x-2">
-      <span class="font-extrabold text-base tracking-wider bg-gradient-to-r from-amber-400 to-orange-500 bg-clip-text text-transparent">
-        FlashERP
-      </span>
-      <span class="text-slate-600">/</span>
-      <span class="font-semibold text-sm text-slate-100">
-        {appTitles[activeApp]?.title ?? activeApp}
-      </span>
-      <span class="hidden md:inline-block text-xs text-slate-400">
-        ({appTitles[activeApp]?.subtitle})
-      </span>
-    </div>
-  </div>
-
-  <!-- Right Meta info -->
-  <div class="flex items-center space-x-3 text-xs">
-    <span class="hidden sm:inline-flex items-center px-2 py-0.5 rounded-full bg-emerald-950 text-emerald-300 border border-emerald-800 font-medium">
-      Apache-2.0 Open Source
-    </span>
-    <div class="flex items-center space-x-2 pl-2 border-l border-slate-700">
-      <div class="w-7 h-7 rounded-full bg-indigo-600 text-white flex items-center justify-center font-bold text-xs">
-        {user.displayName.slice(0, 1).toUpperCase()}
-      </div>
-      <div class="hidden sm:block text-left leading-tight">
-        <p class="font-medium text-slate-200">{user.username}</p>
-        <p class="text-[10px] text-slate-400">{user.displayName}</p>
-      </div>
+<nav class="navbar erp-navbar" aria-label="主要導覽">
+  <div class="container is-fluid">
+    <div class="navbar-brand">
       <button
-        onclick={onLogout}
-        class="rounded-md px-2 py-1 text-slate-300 hover:bg-slate-800 hover:text-white transition"
-        title="登出"
-        aria-label="登出"
+        onclick={onToggleSwitcher}
+        class="navbar-item button is-white"
+        title="切換應用程式"
+        aria-label="切換應用程式"
+        aria-haspopup="dialog"
+        aria-expanded={isSwitcherOpen}
       >
-        登出
+        <Grid3X3 size={18} strokeWidth={1.8} />
       </button>
+      <div class="navbar-item">
+        <span class="erp-brand">FlashERP</span>
+        <span class="mx-2 has-text-grey-light">/</span>
+        <span class="has-text-weight-semibold">{appTitles[activeApp]?.title ?? activeApp}</span>
+      </div>
+    </div>
+
+    <div class="navbar-menu is-active">
+      <div class="navbar-start">
+        <div class="navbar-item is-hidden-touch has-text-grey">
+          {appTitles[activeApp]?.subtitle}
+        </div>
+      </div>
+
+      <div class="navbar-end">
+        <div class="navbar-item is-hidden-mobile">
+          <span class="tag is-success is-light">Apache-2.0 Open Source</span>
+        </div>
+        <div class="navbar-item">
+          <span class="erp-user-avatar mr-2">{user.displayName.slice(0, 1).toUpperCase()}</span>
+          <span class="is-hidden-mobile mr-3">
+            <strong>{user.username}</strong>
+            <small class="is-block has-text-grey">{user.displayName}</small>
+          </span>
+          <button onclick={onLogout} class="button is-light is-small" title="登出">
+            <span class="icon"><LogOut size={15} strokeWidth={1.8} /></span>
+            <span>登出</span>
+          </button>
+        </div>
+      </div>
     </div>
   </div>
-</header>
+</nav>

@@ -1,122 +1,106 @@
-import { Body, Controller, Get, Param, Post, Res } from '@nestjs/common'
-import type { Response } from 'express'
-import { ResultPresenter } from '@platform/http/index.js'
+import { Controller } from '@nestjs/common'
+import { Implement, implement } from '@orpc/nest'
+import { unwrapResult } from '@platform/http/result_adapter.js'
 import { RequirePermission } from '@platform/security/index.js'
 import { ManufacturingContract } from '../contracts/index.js'
-import {
-  AllocateOverheadDto,
-  CompleteWorkOrderDto,
-  CreateWorkOrderDto,
-  IssueMaterialsDto,
-  RegisterBomDto,
-} from '../dto/manufacturing_dto.js'
+import { manufacturingApiContract } from '../contracts/manufacturing_api_contract.js'
 
-@Controller('manufacturing')
+@Controller()
 export class ManufacturingController {
   constructor(private readonly manufacturing: ManufacturingContract) {}
 
   @RequirePermission('manufacturing.bom.create')
-  @Post('boms')
-  async registerBom(@Body() dto: RegisterBomDto, @Res() res: Response) {
-    const result = await this.manufacturing.registerBom({
-      id: dto.id,
-      companyId: dto.companyId,
-      code: dto.code,
-      name: dto.name,
-      parentItemId: dto.parentItemId,
-      baseQuantity: dto.baseQuantity ? BigInt(dto.baseQuantity) : 1n,
-      lines: dto.lines.map((l) => ({
-        componentItemId: l.componentItemId,
-        quantityPerBase: BigInt(l.quantityPerBase),
-        scrapPercentageBasisPoints: l.scrapPercentageBasisPoints,
-        memo: l.memo,
-      })),
-    })
-    return ResultPresenter.handle(res, result, { successStatus: 201 })
+  @Implement(manufacturingApiContract.registerBom)
+  registerBom() {
+    return implement(manufacturingApiContract.registerBom).handler(async ({ input }) =>
+      unwrapResult(
+        await this.manufacturing.registerBom({
+          ...input,
+          baseQuantity: BigInt(input.baseQuantity),
+          lines: input.lines.map((line) => ({
+            ...line,
+            quantityPerBase: BigInt(line.quantityPerBase),
+          })),
+        })
+      )
+    )
   }
 
   @RequirePermission('manufacturing.bom.read')
-  @Get('boms/:id')
-  async getBom(@Param('id') id: string, @Res() res: Response) {
-    const result = await this.manufacturing.getBom(id)
-    return ResultPresenter.handle(res, result)
+  @Implement(manufacturingApiContract.getBom)
+  getBom() {
+    return implement(manufacturingApiContract.getBom).handler(async ({ input }) =>
+      unwrapResult(await this.manufacturing.getBom(input.id))
+    )
   }
 
   @RequirePermission('manufacturing.order.create')
-  @Post('work-orders')
-  async createWorkOrder(@Body() dto: CreateWorkOrderDto, @Res() res: Response) {
-    const result = await this.manufacturing.createWorkOrder({
-      id: dto.id,
-      companyId: dto.companyId,
-      workOrderNumber: dto.workOrderNumber,
-      bomId: dto.bomId,
-      outputWarehouseId: dto.outputWarehouseId,
-      rawMaterialWarehouseId: dto.rawMaterialWarehouseId,
-      targetQuantity: BigInt(dto.targetQuantity),
-      memo: dto.memo,
-    })
-    return ResultPresenter.handle(res, result, { successStatus: 201 })
+  @Implement(manufacturingApiContract.createWorkOrder)
+  createWorkOrder() {
+    return implement(manufacturingApiContract.createWorkOrder).handler(async ({ input }) =>
+      unwrapResult(
+        await this.manufacturing.createWorkOrder({
+          ...input,
+          targetQuantity: BigInt(input.targetQuantity),
+        })
+      )
+    )
   }
 
   @RequirePermission('manufacturing.order.release')
-  @Post('work-orders/:id/release')
-  async releaseWorkOrder(@Param('id') id: string, @Res() res: Response) {
-    const result = await this.manufacturing.releaseWorkOrder(id)
-    return ResultPresenter.handle(res, result)
+  @Implement(manufacturingApiContract.releaseWorkOrder)
+  releaseWorkOrder() {
+    return implement(manufacturingApiContract.releaseWorkOrder).handler(async ({ input }) =>
+      unwrapResult(await this.manufacturing.releaseWorkOrder(input.id))
+    )
   }
 
   @RequirePermission('manufacturing.order.issue')
-  @Post('work-orders/:id/issue-materials')
-  async issueMaterials(
-    @Param('id') id: string,
-    @Body() dto: IssueMaterialsDto,
-    @Res() res: Response
-  ) {
-    const result = await this.manufacturing.issueMaterials({
-      workOrderId: id,
-      issueDate: dto.issueDate,
-      lines: dto.lines.map((l) => ({
-        componentItemId: l.componentItemId,
-        quantity: BigInt(l.quantity),
-      })),
-    })
-    return ResultPresenter.handle(res, result)
+  @Implement(manufacturingApiContract.issueMaterials)
+  issueMaterials() {
+    return implement(manufacturingApiContract.issueMaterials).handler(async ({ input }) =>
+      unwrapResult(
+        await this.manufacturing.issueMaterials({
+          workOrderId: input.id,
+          issueDate: input.issueDate,
+          lines: input.lines.map((line) => ({ ...line, quantity: BigInt(line.quantity) })),
+        })
+      )
+    )
   }
 
   @RequirePermission('manufacturing.order.complete')
-  @Post('work-orders/:id/complete')
-  async completeWorkOrder(
-    @Param('id') id: string,
-    @Body() dto: CompleteWorkOrderDto,
-    @Res() res: Response
-  ) {
-    const result = await this.manufacturing.completeWorkOrder({
-      workOrderId: id,
-      completedQuantity: BigInt(dto.completedQuantity),
-      completionDate: dto.completionDate,
-    })
-    return ResultPresenter.handle(res, result)
+  @Implement(manufacturingApiContract.completeWorkOrder)
+  completeWorkOrder() {
+    return implement(manufacturingApiContract.completeWorkOrder).handler(async ({ input }) =>
+      unwrapResult(
+        await this.manufacturing.completeWorkOrder({
+          workOrderId: input.id,
+          completedQuantity: BigInt(input.completedQuantity),
+          completionDate: input.completionDate,
+        })
+      )
+    )
   }
 
   @RequirePermission('manufacturing.order.read')
-  @Get('work-orders/:id')
-  async getWorkOrder(@Param('id') id: string, @Res() res: Response) {
-    const result = await this.manufacturing.getWorkOrder(id)
-    return ResultPresenter.handle(res, result)
+  @Implement(manufacturingApiContract.getWorkOrder)
+  getWorkOrder() {
+    return implement(manufacturingApiContract.getWorkOrder).handler(async ({ input }) =>
+      unwrapResult(await this.manufacturing.getWorkOrder(input.id))
+    )
   }
 
   @RequirePermission('manufacturing.overhead.allocate')
-  @Post('overhead/allocate')
-  async allocateOverhead(@Body() dto: AllocateOverheadDto, @Res() res: Response) {
-    const result = await this.manufacturing.allocateOverhead({
-      companyId: dto.companyId,
-      overheadAccount: dto.overheadAccount,
-      totalPoolAmountMinorUnits: BigInt(dto.totalPoolAmountMinorUnits),
-      currency: dto.currency,
-      accountingDate: dto.accountingDate,
-      allocationBase: dto.allocationBase,
-      workOrderIds: dto.workOrderIds,
-    })
-    return ResultPresenter.handle(res, result)
+  @Implement(manufacturingApiContract.allocateOverhead)
+  allocateOverhead() {
+    return implement(manufacturingApiContract.allocateOverhead).handler(async ({ input }) =>
+      unwrapResult(
+        await this.manufacturing.allocateOverhead({
+          ...input,
+          totalPoolAmountMinorUnits: BigInt(input.totalPoolAmountMinorUnits),
+        })
+      )
+    )
   }
 }

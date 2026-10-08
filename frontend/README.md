@@ -29,4 +29,8 @@ docker compose build --build-arg VITE_API_URL=http://localhost:3333 frontend
 
 ## API conventions
 
-Authenticated browser requests use the backend-issued HttpOnly session cookie plus the CSRF cookie/header pair, and send the first organization scope as `x-org-unit-id`. Bearer tokens remain available for non-browser integrations. The Sales screen is the first persisted vertical slice; its totals and state transitions are returned by the backend and remain correct after a page reload.
+All business and identity endpoints use `/api`. The oRPC OpenAPI client in `src/lib/api.ts` imports the browser-safe contract from the backend source tree; Valibot schemas provide input/output types without separate frontend interfaces. The frontend Docker builder includes that shared source.
+
+Authenticated browser requests include the HttpOnly session cookie and CSRF cookie/header pair. The client sends the cached session's first organization scope as `x-org-unit-id`; individual calls can override it with `{ context: { organizationUnitId, requestId } }`. HTTP 401 clears the browser session; HTTP 403 preserves it. Session storage contains only validated public session fields, and never an access token. Bearer tokens remain available for non-browser integrations.
+
+`VITE_API_URL` is the backend origin, such as `http://localhost:3333`, without `/api`. OpenAPI contracts supply endpoint paths. The public probes stay at `/health` and `/ready`; API documentation is at `/api/docs`.

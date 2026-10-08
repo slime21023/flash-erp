@@ -92,6 +92,7 @@ async function seedAdmin() {
     'inventory.movement.record',
     'procurement.supplier.create',
     'procurement.order.create',
+    'procurement.order.read',
     'procurement.order.approve',
     'procurement.goods.receive',
     'procurement.requisition.create',

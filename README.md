@@ -27,7 +27,8 @@ FlashERP 是專為單一現代企業設計的高可靠資源規劃系統。拒�
    - **純淨體驗**：不預灌雜亂的模擬業務訂單假數據，系統初始化直接就緒，可直接錄入真實企業帳套。
    - **現代化 Web 後台**：內建基於 **Svelte 5** 的超輕量管理後台（Monorepo `/frontend`），具備 Odoo 風格的 9 宮格應用切換器（App Switcher）、單據狀態指示條（Statusbar）與明細表單。
    - **一鍵 Docker 編排**：`docker compose up -d` 同步啟動 PostgreSQL、FlashERP 後端 API 與 Svelte 前端。
-   - **互動式 API 文檔**：內建 Swagger OpenAPI（訪問 `http://localhost:3333/api/docs`）。
+   - **契約驅動 API**：**NestJS + oRPC 1.15.5 + Valibot 1.5.0** 共用輸入、輸出與錯誤契約，Svelte 使用具型別的 `OpenAPILink` client。
+   - **互動式 API 文檔**：從相同 API 契約產生 OpenAPI（`http://localhost:3333/api/docs`；JSON 為 `/api/openapi.json`）。
 2. **媲美 Odoo 的 Addon 擴充架構**：
    - **模組清單機制（Module Manifest）**：每個模組具備自描述清單，支援依賴拓撲排序（Topological Sort）與無循環依賴檢驗。
    - **動態自訂欄位（JSONB Custom Fields）**：第三方外掛可在不停機、不破壞實體 Schema 的前提下自由擴充動態屬性。
@@ -55,6 +56,7 @@ FlashERP/
 │   │   ├── workflow/                   # 有限狀態機與多階審批 Pipeline
 │   │   ├── numbering/                  # 樂觀鎖單據流水號產生器
 │   │   ├── persistence/                # runInTransaction ACID 交易傳播引擎
+│   │   ├── http/                       # 共用 Valibot schemas、Result/oRPC 邊界適配器
 │   │   └── security/                   # RBAC Guard、權限宣告與組織作用域
 │   │
 │   └── modules/                        # 【9 大核心領域模組】(預設全數啟用)
@@ -68,6 +70,8 @@ FlashERP/
 │       ├── treasury/                   # 銀行帳戶、收付款憑單與規則對帳 (Cash)
 │       └── manufacturing/              # BOM 展算、工單發料 WIP 與製費分攤 (PP/CO)
 ```
+
+各領域的 `contracts/<module>_api_contract.ts` 定義 oRPC procedures 與 Valibot schemas，由 `src/api_contract.ts` 聚合供前後端共用。內部抽象 Contract 維持 NestJS DI 與 `Result<T, DomainError>`；API 契約的匯入圖由架構檢查限制為瀏覽器可用的純定義。
 
 ---
 
@@ -130,15 +134,41 @@ curl -fsS https://erp.example.com/ready
 
 ---
 
+### API 契約與前端呼叫
+
+所有業務路由統一使用 `/api` 前綴，例如 `GET /api/sales/orders/{id}`、`POST /api/inventory/movements`；舊的無前綴業務路由已移除。系統模組清單維持 `GET /api/system/modules`。`/`、`/health`、`/ready` 保留原生 NestJS 路由，readiness 在資料庫不可用時回傳 503。
+
+前端透過 `frontend/src/lib/api.ts` 的共用 client 呼叫 API，輸入與回應型別由契約推導：
+
+```typescript
+import { api } from './lib/api'
+
+const order = await api.sales.getSalesOrder(
+  { id: 'so-001' },
+  { context: { organizationUnitId: 'company-001', requestId: 'request-001' } }
+)
+```
+
+Client 自動攜帶 Cookie 與 CSRF header；可按呼叫覆寫組織作用域與 request ID。收到 401 時清除本地 session；403 或業務錯誤不會登出。金額與數量以整數十進位字串傳輸以保留 `bigint` 精度，日期使用 `YYYY-MM-DD`，時間戳使用 ISO 格式。Valibot strict objects 拒絕未知輸入欄位，成功回應直接返回 schema 定義的 snapshot。
+
+錯誤使用 oRPC 格式，包含 `defined`、`code`、`status`、`message` 與有宣告時的 `data`；不再以 `{ error: ... }` 包裝。前端捕獲 `ORPCError` 後可依 `code`／`status` 處理業務情況。未知錯誤及輸出驗證失敗只公開遮蔽後的 500。建立操作通常回傳 201，登出為 204 空回應；有 body 的 API 僅接受 JSON，無效 JSON 為 400、超過 1 MiB 為 413、非支援媒體類型為 415。
+
+契約與文件同步更新：新增 procedure 時在模組的純 API 契約使用共用 schemas，在 Controller 使用 `@Implement` 與獨立權限，並將領域 `Result` 交給 `unwrapResult`。新模組可用 `npm run make:module <module_name>` 建立，產生器包含空 API 契約而不建立 DTO。版本固定使用穩定的 oRPC 1.15.5 與 Valibot 1.5.0，參考 [oRPC v1 NestJS 整合](https://v1.orpc.dev/docs/openapi/integrations/implement-contract-in-nest) 及 [Valibot 整合](https://v1.orpc.dev/docs/integrations/valibot)，避免混用 beta API。
+
+前後端必須使用同一版本的 API 契約一起發版；此次遷移不變更資料表，不需要資料 migration。
+
+---
+
 ## English Overview
 
-FlashERP is a high-reliability, modular-monolith ERP engineered with **NestJS 11**, **Svelte 5**, **TypeORM**, and **PostgreSQL 16**.
+FlashERP is a high-reliability, modular-monolith ERP engineered with **NestJS 11**, **oRPC 1.15.5**, **Valibot 1.5.0**, **Svelte 5**, **TypeORM**, and **PostgreSQL 16**.
 
 ### Key Architectural Strengths:
 
 - **Batteries-Included & Clean Slate**: Starts clean without mock transactional clutter, ready for actual business accounting.
 - **Odoo-style Extensible Addons**: Modular manifests (`ModuleManifest`), topological dependency resolution (`AddonRegistry`), dynamic custom fields (JSONB), and lifecycle extension hooks.
 - **ACID Everywhere**: Cross-module calls run inside single database transactions with automatic propagation via `runInTransaction`.
+- **Shared API Contracts**: Browser-safe oRPC/Valibot definitions drive runtime validation, inferred frontend types, and OpenAPI documentation; NestJS keeps DI, guards, and request lifecycle.
 - **Property-Based Testing**: Validated by `fast-check` with >= 1,000 iterations per algorithmic invariant.
 
 ---

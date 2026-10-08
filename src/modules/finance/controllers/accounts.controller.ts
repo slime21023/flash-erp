@@ -1,25 +1,27 @@
-import { Body, Controller, Get, Param, Post, Res } from '@nestjs/common'
-import type { Response } from 'express'
-import { ResultPresenter } from '@platform/http/index.js'
+import { Controller } from '@nestjs/common'
+import { Implement, implement } from '@orpc/nest'
+import { unwrapResult } from '@platform/http/result_adapter.js'
 import { RequirePermission } from '@platform/security/index.js'
 import { AccountContract } from '../contracts/index.js'
-import { CreateAccountDto } from '../dto/create_account.dto.js'
+import { financeApiContract } from '../contracts/finance_api_contract.js'
 
-@Controller('finance/accounts')
+@Controller()
 export class AccountsController {
   constructor(private readonly account: AccountContract) {}
 
   @RequirePermission('finance.account.create')
-  @Post()
-  async store(@Body() dto: CreateAccountDto, @Res() res: Response) {
-    const result = await this.account.create(dto)
-    return ResultPresenter.handle(res, result, { successStatus: 201 })
+  @Implement(financeApiContract.accounts.store)
+  store() {
+    return implement(financeApiContract.accounts.store).handler(async ({ input }) =>
+      unwrapResult(await this.account.create(input))
+    )
   }
 
   @RequirePermission('finance.account.read')
-  @Get(':id')
-  async show(@Param('id') id: string, @Res() res: Response) {
-    const result = await this.account.find(id)
-    return ResultPresenter.handle(res, result)
+  @Implement(financeApiContract.accounts.show)
+  show() {
+    return implement(financeApiContract.accounts.show).handler(async ({ input }) =>
+      unwrapResult(await this.account.find(input.id))
+    )
   }
 }

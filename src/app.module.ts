@@ -1,5 +1,7 @@
 import { Module } from '@nestjs/common'
 import { APP_INTERCEPTOR } from '@nestjs/core'
+import { ORPCModule, onError } from '@orpc/nest'
+import { ORPCError } from '@orpc/server'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { ConfigModule } from '@nestjs/config'
@@ -33,6 +35,14 @@ const appDirectory = dirname(fileURLToPath(import.meta.url))
 
 @Module({
   imports: [
+    ORPCModule.forRoot({
+      interceptors: [
+        onError((error) => {
+          if (!(error instanceof ORPCError) || error.status >= 500)
+            console.error('API procedure failed', error)
+        }),
+      ],
+    }),
     ConfigModule.forRoot({ isGlobal: true, validate: validateEnvironment }),
     EventEmitterModule.forRoot(),
     OutboxModule,

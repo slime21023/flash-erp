@@ -3,6 +3,7 @@ dist
 **/dist
 build
 coverage
+.vitest
 .adonisjs
 .ace
 app

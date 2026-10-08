@@ -1,25 +1,27 @@
-import { Body, Controller, Get, Param, Post, Res } from '@nestjs/common'
-import type { Response } from 'express'
-import { ResultPresenter } from '@platform/http/index.js'
+import { Controller } from '@nestjs/common'
+import { Implement, implement } from '@orpc/nest'
+import { unwrapResult } from '@platform/http/result_adapter.js'
 import { RequirePermission } from '@platform/security/index.js'
 import { OrganizationContract } from '../contracts/index.js'
-import { RegisterOrganizationUnitDto } from '../dto/register_organization_unit.dto.js'
+import { organizationApiContract } from '../contracts/organization_api_contract.js'
 
-@Controller('organization/units')
+@Controller()
 export class OrganizationUnitsController {
   constructor(private readonly organization: OrganizationContract) {}
 
   @RequirePermission('organization.unit.create')
-  @Post()
-  async register(@Body() dto: RegisterOrganizationUnitDto, @Res() res: Response) {
-    const result = await this.organization.registerUnit(dto)
-    return ResultPresenter.handle(res, result, { successStatus: 201 })
+  @Implement(organizationApiContract.units.register)
+  register() {
+    return implement(organizationApiContract.units.register).handler(async ({ input }) =>
+      unwrapResult(await this.organization.registerUnit(input))
+    )
   }
 
   @RequirePermission('organization.unit.read')
-  @Get(':id')
-  async find(@Param('id') id: string, @Res() res: Response) {
-    const result = await this.organization.findUnit(id)
-    return ResultPresenter.handle(res, result)
+  @Implement(organizationApiContract.units.find)
+  find() {
+    return implement(organizationApiContract.units.find).handler(async ({ input }) =>
+      unwrapResult(await this.organization.findUnit(input.id))
+    )
   }
 }

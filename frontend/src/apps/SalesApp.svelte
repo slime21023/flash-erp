@@ -1,42 +1,9 @@
 <script lang="ts">
   import Statusbar from '../lib/components/Statusbar.svelte'
-  import { ApiError, apiRequest, readAuthSession } from '../lib/api.js'
+  import { api, ORPCError, readAuthSession, type Api } from '../lib/api.js'
 
-  type Customer = {
-    id: string
-    companyId: string
-    code: string
-    name: string
-    currency: string
-    creditLimitMinorUnits: string
-    currentOutstandingMinorUnits: string
-    isActive: boolean
-  }
-
-  type SalesOrderLine = {
-    itemId: string
-    warehouseId: string
-    orderedQuantity: string
-    shippedQuantity: string
-    unitPriceMinorUnits: string
-    lineTotalMinorUnits: string
-    currency: string
-  }
-
-  type SalesOrder = {
-    id: string
-    companyId: string
-    customerId: string
-    number: string
-    status: 'DRAFT' | 'CONFIRMED' | 'SHIPPED' | 'CLOSED' | 'VOID'
-    taxRateBasisPoints: number
-    netAmountMinorUnits: string
-    taxAmountMinorUnits: string
-    totalAmountMinorUnits: string
-    reservationIds: string[]
-    lines: SalesOrderLine[]
-    memo?: string
-  }
+  type Customer = Awaited<ReturnType<Api['sales']['getCustomer']>>
+  type SalesOrder = Awaited<ReturnType<Api['sales']['getSalesOrder']>>
 
   const session = readAuthSession()
   let orderId = $state('')
@@ -74,7 +41,7 @@
   }
 
   function messageFor(error: unknown): string {
-    if (error instanceof ApiError) return `${error.message} (${error.status})`
+    if (error instanceof ORPCError) return `${error.message} (${error.status})`
     return error instanceof Error ? error.message : '操作失敗'
   }
 
@@ -93,7 +60,7 @@
       customer = null
       return
     }
-    customer = await apiRequest<Customer>(`/sales/customers/${encodeURIComponent(id.trim())}`)
+    customer = await api.sales.getCustomer({ id: id.trim() }, { context: { organizationUnitId: companyId } })
     companyId = customer.companyId
   }
 
@@ -105,7 +72,7 @@
     isBusy = true
     notification = null
     try {
-      order = await apiRequest<SalesOrder>(`/sales/orders/${encodeURIComponent(orderId.trim())}`)
+      order = await api.sales.getSalesOrder({ id: orderId.trim() }, { context: { organizationUnitId: companyId } })
       companyId = order.companyId
       customerId = order.customerId
       warehouseId = order.lines[0]?.warehouseId ?? warehouseId
@@ -133,17 +100,14 @@
     notification = null
     try {
       const id = customerId.trim() || `cust-${crypto.randomUUID()}`
-      customer = await apiRequest<Customer>('/sales/customers', {
-        method: 'POST',
-        body: {
-          id,
-          companyId: companyId.trim(),
-          code: customerCode.trim(),
-          name: customerName.trim(),
-          currency,
-          creditLimitMinorUnits: creditLimitMinorUnits.trim() || '0',
-        },
-      })
+      customer = await api.sales.registerCustomer({
+        id,
+        companyId: companyId.trim(),
+        code: customerCode.trim(),
+        name: customerName.trim(),
+        currency,
+        creditLimitMinorUnits: creditLimitMinorUnits.trim() || '0',
+      }, { context: { organizationUnitId: companyId } })
       customerId = customer.id
       notify('success', `客戶 ${customer.code} 已建立。`)
     } catch (error) {
@@ -173,24 +137,19 @@
     try {
       orderId = orderId.trim() || `so-${crypto.randomUUID()}`
       orderNumber = orderNumber.trim() || `SO-${new Date().getFullYear()}-${Date.now()}`
-      order = await apiRequest<SalesOrder>('/sales/orders', {
-        method: 'POST',
-        body: {
-          id: orderId,
-          companyId: companyId.trim(),
-          customerId: customerId.trim(),
-          number: orderNumber,
-          lines: [
-            {
-              itemId: itemId.trim(),
-              warehouseId: warehouseId.trim(),
-              orderedQuantity,
-              unitPriceMinorUnits,
-              currency,
-            },
-          ],
-        },
-      })
+      order = await api.sales.createSalesOrder({
+        id: orderId,
+        companyId: companyId.trim(),
+        customerId: customerId.trim(),
+        number: orderNumber,
+        lines: [{
+          itemId: itemId.trim(),
+          warehouseId: warehouseId.trim(),
+          orderedQuantity,
+          unitPriceMinorUnits,
+          currency,
+        }],
+      }, { context: { organizationUnitId: companyId } })
       await loadCustomer(customerId)
       notify('success', `訂單 ${order.number} 已儲存為草稿。`)
     } catch (error) {
@@ -205,9 +164,7 @@
     isBusy = true
     notification = null
     try {
-      order = await apiRequest<SalesOrder>(`/sales/orders/${encodeURIComponent(order.id)}/confirm`, {
-        method: 'POST',
-      })
+      order = await api.sales.confirmOrder({ id: order.id }, { context: { organizationUnitId: companyId } })
       notify('success', '訂單已確認，後端已執行信用檢查與 ATP 庫存預留。')
     } catch (error) {
       notify('error', messageFor(error))
@@ -221,15 +178,12 @@
     isBusy = true
     notification = null
     try {
-      const shipment = await apiRequest<{ id: string }>('/sales/shipments', {
-        method: 'POST',
-        body: {
-          id: shipmentId.trim() || `ship-${crypto.randomUUID()}`,
-          salesOrderId: order.id,
-          warehouseId: warehouseId.trim() || order.lines[0]?.warehouseId,
-          shipmentDate: new Date().toISOString().slice(0, 10),
-        },
-      })
+      const shipment = await api.sales.createShipment({
+        id: shipmentId.trim() || `ship-${crypto.randomUUID()}`,
+        salesOrderId: order.id,
+        warehouseId: warehouseId.trim() || order.lines[0]?.warehouseId || '',
+        shipmentDate: new Date().toISOString().slice(0, 10),
+      }, { context: { organizationUnitId: companyId } })
       shipmentId = shipment.id
       await loadOrder()
       notify('success', `出貨單 ${shipment.id} 已建立，庫存與 AR/COGS 已由後端處理。`)
@@ -249,7 +203,7 @@
   }
 </script>
 
-<div class="max-w-7xl mx-auto p-6 space-y-6">
+<div class="erp-page">
   <Statusbar
     {stages}
     {currentStage}
@@ -265,117 +219,99 @@
   />
 
   {#if notification}
-    <div
-      class="p-3.5 rounded-lg border text-xs flex items-center justify-between {notification.type === 'error' ? 'bg-rose-50 border-rose-200 text-rose-900' : 'bg-indigo-50 border-indigo-200 text-indigo-900'}"
-      role="status"
-    >
+    <div class="notification {notification.type === 'error' ? 'is-danger' : 'is-info'} is-light py-3 is-flex is-align-items-center is-justify-content-space-between" role="status">
       <span>{notification.text}</span>
-      <button onclick={() => (notification = null)} class="font-bold ml-2" aria-label="關閉訊息">×</button>
+      <button onclick={() => (notification = null)} class="delete" aria-label="關閉訊息"></button>
     </div>
   {/if}
 
-  <div class="bg-white rounded-xl border border-slate-200 shadow-xs p-6 space-y-5">
+  <section class="erp-panel">
     <div>
-      <span class="text-[10px] font-bold text-indigo-600 uppercase tracking-wider">銷售訂單 (Sales Order)</span>
-      <h2 class="text-xl font-extrabold text-slate-900">Sales vertical slice</h2>
-      <p class="mt-1 text-xs text-slate-500">資料直接讀寫後端 PostgreSQL；請使用已建立的料品、倉庫與客戶 ID。</p>
+      <span class="erp-eyebrow">銷售訂單 (Sales Order)</span>
+      <h2 class="erp-page-title">Sales vertical slice</h2>
+      <p class="erp-page-hint">資料直接讀寫後端 PostgreSQL；請使用已建立的料品、倉庫與客戶 ID。</p>
     </div>
 
-    <div class="grid grid-cols-1 md:grid-cols-4 gap-3 text-xs">
-      <label class="space-y-1">訂單 ID<input bind:value={orderId} class="field" placeholder="so-..." /></label>
-      <label class="space-y-1">訂單號碼<input bind:value={orderNumber} class="field" placeholder="SO-2026-001" /></label>
-      <label class="space-y-1">公司 / scope<input bind:value={companyId} class="field" required /></label>
-      <button onclick={loadOrder} disabled={isBusy} class="self-end rounded-lg bg-slate-800 px-3 py-2 font-semibold text-white disabled:opacity-50">載入訂單</button>
+    <div class="erp-form-grid">
+      <label>訂單 ID<input bind:value={orderId} class="input" placeholder="so-..." /></label>
+      <label>訂單號碼<input bind:value={orderNumber} class="input" placeholder="SO-2026-001" /></label>
+      <label>公司 / scope<input bind:value={companyId} class="input" required /></label>
+      <button onclick={loadOrder} disabled={isBusy} class="button is-light">載入訂單</button>
     </div>
 
-    <div class="grid grid-cols-1 md:grid-cols-4 gap-3 text-xs border-t border-slate-100 pt-5">
-      <label class="space-y-1">客戶 ID<input bind:value={customerId} class="field" placeholder="cust-..." /></label>
-      <label class="space-y-1">料品 ID<input bind:value={itemId} class="field" placeholder="item-..." /></label>
-      <label class="space-y-1">倉庫 ID<input bind:value={warehouseId} class="field" placeholder="wh-..." /></label>
-      <label class="space-y-1">幣別<input bind:value={currency} class="field" maxlength="3" /></label>
-      <label class="space-y-1">訂購數量<input bind:value={orderedQuantity} class="field" inputmode="numeric" /></label>
-      <label class="space-y-1">單價（最小單位）<input bind:value={unitPriceMinorUnits} class="field" inputmode="numeric" /></label>
-      <button onclick={createOrder} disabled={isBusy} class="self-end rounded-lg bg-indigo-600 px-3 py-2 font-semibold text-white disabled:opacity-50">建立銷售訂單</button>
+    <div class="erp-form-grid">
+      <label>客戶 ID<input bind:value={customerId} class="input" placeholder="cust-..." /></label>
+      <label>料品 ID<input bind:value={itemId} class="input" placeholder="item-..." /></label>
+      <label>倉庫 ID<input bind:value={warehouseId} class="input" placeholder="wh-..." /></label>
+      <label>幣別<input bind:value={currency} class="input" maxlength="3" /></label>
+      <label>訂購數量<input bind:value={orderedQuantity} class="input" inputmode="numeric" /></label>
+      <label>單價（最小單位）<input bind:value={unitPriceMinorUnits} class="input" inputmode="numeric" /></label>
+      <button onclick={createOrder} disabled={isBusy} class="button is-primary">建立銷售訂單</button>
     </div>
-  </div>
+  </section>
 
-  <div class="bg-white rounded-xl border border-slate-200 shadow-xs p-6 space-y-4">
-    <div class="flex items-center justify-between">
+  <section class="erp-panel">
+    <div class="is-flex is-align-items-center is-justify-content-space-between" style="gap: 1rem">
       <div>
-        <h3 class="font-bold text-sm">客戶主檔與信用</h3>
-        <p class="text-xs text-slate-500">可先建立客戶，或輸入既有客戶 ID 後查詢。</p>
+        <h3 class="erp-panel-title">客戶主檔與信用</h3>
+        <p class="is-size-7 has-text-grey">可先建立客戶，或輸入既有客戶 ID 後查詢。</p>
       </div>
-      <button onclick={() => loadCustomer()} disabled={isBusy} class="rounded-lg border border-slate-300 px-3 py-2 text-xs font-semibold disabled:opacity-50">查詢客戶</button>
+      <button onclick={() => loadCustomer()} disabled={isBusy} class="button is-light is-small">查詢客戶</button>
     </div>
-    <div class="grid grid-cols-1 md:grid-cols-4 gap-3 text-xs">
-      <label class="space-y-1">客戶代碼<input bind:value={customerCode} class="field" placeholder="CUST-001" /></label>
-      <label class="space-y-1">客戶名稱<input bind:value={customerName} class="field" placeholder="Customer" /></label>
-      <label class="space-y-1">信用額度（最小單位）<input bind:value={creditLimitMinorUnits} class="field" inputmode="numeric" /></label>
-      <button onclick={registerCustomer} disabled={isBusy} class="self-end rounded-lg bg-emerald-600 px-3 py-2 font-semibold text-white disabled:opacity-50">建立客戶</button>
+    <div class="erp-form-grid">
+      <label>客戶代碼<input bind:value={customerCode} class="input" placeholder="CUST-001" /></label>
+      <label>客戶名稱<input bind:value={customerName} class="input" placeholder="Customer" /></label>
+      <label>信用額度（最小單位）<input bind:value={creditLimitMinorUnits} class="input" inputmode="numeric" /></label>
+      <button onclick={registerCustomer} disabled={isBusy} class="button is-primary">建立客戶</button>
     </div>
     {#if customer}
-      <div class="rounded-lg bg-slate-50 p-3 text-xs text-slate-700">
-        <span class="font-semibold">{customer.name} ({customer.code})</span>
+      <div class="notification is-light py-3 is-size-7 mb-0">
+        <span class="has-text-weight-semibold">{customer.name} ({customer.code})</span>
         <span class="ml-3">未收：NT$ {formatMinorUnits(customer.currentOutstandingMinorUnits)}</span>
         <span class="ml-3">額度：NT$ {formatMinorUnits(customer.creditLimitMinorUnits)}</span>
       </div>
     {/if}
-  </div>
+  </section>
 
   {#if order}
-    <div class="bg-white rounded-xl border border-slate-200 shadow-xs p-6 space-y-6">
-      <div class="flex flex-col md:flex-row justify-between gap-4 pb-4 border-b border-slate-100">
+    <section class="erp-panel">
+      <div class="is-flex is-flex-wrap-wrap is-justify-content-space-between pb-4" style="gap: 1rem; border-bottom: 1px solid var(--bulma-border-weak)">
         <div>
-          <span class="text-[10px] font-bold text-indigo-600 uppercase tracking-wider">已持久化訂單</span>
-          <h2 class="text-xl font-extrabold text-slate-900">{order.number}</h2>
-          <p class="font-mono text-xs text-slate-500">{order.id} · {order.status}</p>
+          <span class="erp-eyebrow">已持久化訂單</span>
+          <h2 class="title is-5 mb-1">{order.number}</h2>
+          <p class="erp-code is-size-7 has-text-grey">{order.id} · {order.status}</p>
         </div>
-        <div class="text-right">
-          <span class="text-xs text-slate-400">訂單總金額</span>
-          <p class="text-2xl font-black text-slate-900">NT$ {formatMinorUnits(order.totalAmountMinorUnits)}</p>
+        <div class="has-text-right">
+          <span class="is-size-7 has-text-grey">訂單總金額</span>
+          <p class="title is-4 mb-0">NT$ {formatMinorUnits(order.totalAmountMinorUnits)}</p>
         </div>
       </div>
 
-      <div class="overflow-x-auto">
-        <table class="w-full text-left text-xs border-collapse">
-          <thead><tr class="bg-slate-50 border-y border-slate-200 text-slate-600 font-semibold"><th class="py-2.5 px-3">料品</th><th class="py-2.5 px-3">倉庫</th><th class="py-2.5 px-3 text-right">數量</th><th class="py-2.5 px-3 text-right">已出貨</th><th class="py-2.5 px-3 text-right">單價</th><th class="py-2.5 px-3 text-right">小計</th></tr></thead>
-          <tbody class="divide-y divide-slate-100">
+      <div class="erp-table-wrap">
+        <table class="table is-fullwidth is-hoverable is-size-7">
+          <thead><tr><th>料品</th><th>倉庫</th><th class="has-text-right">數量</th><th class="has-text-right">已出貨</th><th class="has-text-right">單價</th><th class="has-text-right">小計</th></tr></thead>
+          <tbody>
             {#each lines as line}
-              <tr><td class="py-2.5 px-3 font-mono">{line.itemId}</td><td class="py-2.5 px-3 font-mono">{line.warehouseId}</td><td class="py-2.5 px-3 text-right">{line.orderedQuantity}</td><td class="py-2.5 px-3 text-right">{line.shippedQuantity}</td><td class="py-2.5 px-3 text-right">{formatMinorUnits(line.unitPriceMinorUnits)}</td><td class="py-2.5 px-3 text-right font-bold">{formatMinorUnits(line.lineTotalMinorUnits)}</td></tr>
+              <tr><td class="erp-code">{line.itemId}</td><td class="erp-code">{line.warehouseId}</td><td class="has-text-right">{line.orderedQuantity}</td><td class="has-text-right">{line.shippedQuantity}</td><td class="has-text-right">{formatMinorUnits(line.unitPriceMinorUnits)}</td><td class="has-text-right has-text-weight-bold">{formatMinorUnits(line.lineTotalMinorUnits)}</td></tr>
             {/each}
           </tbody>
         </table>
       </div>
 
-      <div class="flex justify-end border-t border-slate-100 pt-4">
-        <div class="w-64 space-y-1.5 text-xs text-slate-600">
-          <div class="flex justify-between"><span>未稅小計</span><span class="font-semibold">NT$ {formatMinorUnits(order.netAmountMinorUnits)}</span></div>
-          <div class="flex justify-between"><span>營業稅</span><span class="font-semibold">NT$ {formatMinorUnits(order.taxAmountMinorUnits)}</span></div>
-          <div class="flex justify-between text-sm font-bold text-slate-900 pt-2 border-t border-slate-200"><span>應付總計</span><span class="text-indigo-600">NT$ {formatMinorUnits(order.totalAmountMinorUnits)}</span></div>
+      <div class="is-flex is-justify-content-flex-end pt-4" style="border-top: 1px solid var(--bulma-border-weak)">
+        <div style="width: min(100%, 16rem)" class="is-size-7">
+          <div class="is-flex is-justify-content-space-between"><span>未稅小計</span><span class="has-text-weight-semibold">NT$ {formatMinorUnits(order.netAmountMinorUnits)}</span></div>
+          <div class="is-flex is-justify-content-space-between mt-2"><span>營業稅</span><span class="has-text-weight-semibold">NT$ {formatMinorUnits(order.taxAmountMinorUnits)}</span></div>
+          <div class="is-flex is-justify-content-space-between mt-2 pt-2 has-text-weight-bold" style="border-top: 1px solid var(--bulma-border)"><span>應付總計</span><span class="has-text-link">NT$ {formatMinorUnits(order.totalAmountMinorUnits)}</span></div>
         </div>
       </div>
 
       {#if currentStage === 'CONFIRMED'}
-        <div class="border-t border-slate-100 pt-4 flex items-end gap-3 text-xs">
-          <label class="space-y-1 flex-1">出貨單 ID（可留白自動產生）<input bind:value={shipmentId} class="field" placeholder="ship-..." /></label>
-          <button onclick={createShipment} disabled={isBusy} class="rounded-lg bg-indigo-600 px-4 py-2 font-semibold text-white disabled:opacity-50">建立出貨</button>
+        <div class="erp-actions pt-4" style="border-top: 1px solid var(--bulma-border-weak)">
+          <label class="field mb-0" style="flex: 1 1 16rem">出貨單 ID（可留白自動產生）<input bind:value={shipmentId} class="input" placeholder="ship-..." /></label>
+          <button onclick={createShipment} disabled={isBusy} class="button is-primary">建立出貨</button>
         </div>
       {/if}
-    </div>
+    </section>
   {/if}
 </div>
-
-<style>
-  :global(.field) {
-    width: 100%;
-    border: 1px solid rgb(203 213 225);
-    border-radius: 0.5rem;
-    padding: 0.5rem 0.625rem;
-    outline: none;
-  }
-
-  :global(.field:focus) {
-    border-color: rgb(99 102 241);
-    box-shadow: 0 0 0 2px rgb(224 231 255);
-  }
-</style>

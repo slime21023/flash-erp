@@ -5,6 +5,7 @@ COPY package*.json ./
 COPY frontend/package.json ./frontend/package.json
 RUN npm ci
 COPY frontend ./frontend
+COPY src ./src
 WORKDIR /app/frontend
 ARG VITE_API_URL=
 ENV VITE_API_URL=${VITE_API_URL}

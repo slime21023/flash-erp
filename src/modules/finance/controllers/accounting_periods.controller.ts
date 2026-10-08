@@ -1,25 +1,27 @@
-import { Body, Controller, Param, Post, Res } from '@nestjs/common'
-import type { Response } from 'express'
-import { ResultPresenter } from '@platform/http/index.js'
+import { Controller } from '@nestjs/common'
+import { Implement, implement } from '@orpc/nest'
+import { unwrapResult } from '@platform/http/result_adapter.js'
 import { RequirePermission } from '@platform/security/index.js'
 import { AccountingPeriodContract } from '../contracts/index.js'
-import { CreateAccountingPeriodDto } from '../dto/create_accounting_period.dto.js'
+import { financeApiContract } from '../contracts/finance_api_contract.js'
 
-@Controller('finance/accounting-periods')
+@Controller()
 export class AccountingPeriodsController {
   constructor(private readonly period: AccountingPeriodContract) {}
 
   @RequirePermission('finance.period.create')
-  @Post()
-  async store(@Body() dto: CreateAccountingPeriodDto, @Res() res: Response) {
-    const result = await this.period.create(dto)
-    return ResultPresenter.handle(res, result, { successStatus: 201 })
+  @Implement(financeApiContract.accountingPeriods.store)
+  store() {
+    return implement(financeApiContract.accountingPeriods.store).handler(async ({ input }) =>
+      unwrapResult(await this.period.create(input))
+    )
   }
 
   @RequirePermission('finance.period.lock')
-  @Post(':id/lock')
-  async lock(@Param('id') id: string, @Res() res: Response) {
-    const result = await this.period.lock(id)
-    return ResultPresenter.handle(res, result)
+  @Implement(financeApiContract.accountingPeriods.lock)
+  lock() {
+    return implement(financeApiContract.accountingPeriods.lock).handler(async ({ input }) =>
+      unwrapResult(await this.period.lock(input.id))
+    )
   }
 }

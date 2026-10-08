@@ -10,7 +10,7 @@
 - **核心技術棧**：
   - **Runtime / Framework**：Node.js + **NestJS 11+**（純 ESM、全 TypeScript、模組化 DI）。
   - **Database & ORM**：PostgreSQL + **TypeORM**（強型別交易管理）。
-  - **輸入驗證**：**class-validator** + `ValidationPipe`。
+  - **API 契約與驗證**：**oRPC 1.15.5** + **Valibot 1.5.0**，透過 `@orpc/nest` 實作 contract-first HTTP API。
   - **測試框架**：**Vitest** + **fast-check**（Property-Based Testing, PBT）。
 - **架構風格**：**單體模組架構（Modular Monolith）**，拒絕過早微服務化帶來的分散式交易開銷，充分享受單一資料庫的 ACID 強一致性。
 
@@ -28,20 +28,20 @@ FlashERP/
 │   │   ├── kernel/                     # 不可變領域值物件：Money、Quantity、Decimal 等
 │   │   ├── workflow/                   # 狀態機引擎、審批 Pipeline 引擎
 │   │   ├── numbering/                  # 單據流水號產生器合約與實作
-│   │   ├── http/                       # 邊界適配器：ResultPresenter
+│   │   ├── http/                       # 純 API schemas、Result/oRPC 邊界適配器
 │   │   └── testing/                    # PBT 專用領域生成器倉庫（fast-check Arbitraries）
 │   │
 │   └── modules/                        # 【業務領域模組】高內聚的領域邊界
 │       ├── [module_name]/              # 例：sales, inventory, finance, organization, rbac
-│       │   ├── contracts/              # 【唯一對外公開層】抽象類別 (Abstract Class)、DTO、DomainError
+│       │   ├── contracts/              # 【唯一對外公開層】抽象 Contract、DomainError、*_api_contract.ts
 │       │   ├── services/               # 模組私有用例 (Use Cases)
 │       │   ├── entities/               # 模組私有 TypeORM Entities
-│       │   ├── controllers/            # HTTP 控制器
-│       │   ├── dto/                    # class-validator 輸入 DTO
+│       │   ├── controllers/            # @Implement API 契約的 NestJS 控制器
 │       │   ├── events/                 # 領域事件 (Domain Events)
 │       │   ├── listeners/              # 外部事件監聽器
 │       │   └── manifest.ts              # 模組自描述清單
 │
+├── src/api_contract.ts                 # 前後端共用的純 API 契約聚合入口
 ├── src/database/migrations/            # TypeORM 資料庫遷移檔
 ├── scripts/                             # 專案專屬 CLI 與品質檢查
 └── tests/
@@ -72,10 +72,11 @@ FlashERP/
 1. **同步呼叫**：只允許引用目標模組的 `contracts/` 目錄。透過 NestJS DI 注入抽象類別：
    ```typescript
    // 允許在 Sales 模組中引用
-   import { InventoryContract } from '#modules/inventory/contracts/inventory.contract'
+   import { InventoryContract } from '#modules/inventory/contracts/inventory_contract.js'
    ```
 2. **非同步通知**：先將領域事件寫入 transactional outbox，再由 EventEmitter dispatcher 發布；其他模組的 `listeners/` 進行監聽。
-3. **資料庫交易共享**：跨模組事務必須由發起方建立 `db.transaction()`，並將 `{ client: trx }` 顯式傳入所有受影響的模組契約中。
+3. **資料庫交易共享**：跨模組事務由發起方使用 `runInTransaction` 建立 TypeORM 交易，並將 `{ client: trx }` 顯式傳入所有受影響的模組契約中。
+4. **API 與內部合約分離**：`contracts/index.ts` 提供伺服器內部抽象合約；`contracts/<module>_api_contract.ts` 提供瀏覽器可匯入的 oRPC/Valibot 契約。API 契約禁止匯入伺服器 barrel、NestJS、TypeORM、Node.js 模組與領域實作；只可依賴其他 API 契約、`platform/http/api_schemas.ts`、`system_api_contract.ts`、`@orpc/contract` 與 `valibot`。前端透過 `src/api_contract.ts` 使用契約，模組間仍透過 DI 呼叫內部合約。
 
 ---
 
@@ -90,13 +91,12 @@ FlashERP/
 export class InsufficientStockError extends DomainError {
   readonly code = 'INSUFFICIENT_STOCK'
   constructor(
-    public sku: string,
-    public requested: number,
-    public available: number
+    readonly skuOrId: string,
+    readonly requested: bigint,
+    readonly available: bigint
   ) {
-    super()
+    super(`SKU: ${skuOrId} 庫存不足（需求: ${requested}，可用: ${available}）`)
   }
-  readonly message = `SKU: ${this.sku} 庫存不足（需求: ${this.requested}，可用: ${this.available}）`
 }
 
 // 業務 Service 採用鐵路鏈式串接 (Railway-Oriented Programming)
@@ -108,13 +108,12 @@ export class SalesOrderService {
     return order
       .ensureCanApprove()
       .andThen((o) => this.creditLimitCheck(o))
-      .andThen(async (o) => {
+      .andThenAsync(async (o) => {
         const reserveRes = await this.inventoryContract.reserve(o.items)
-        return reserveRes.map(() => o)
-      })
-      .andThen(async (o) => {
-        const saved = await this.orderRepo.saveApproved(o)
-        return ok(saved)
+        return reserveRes.andThenAsync(async () => {
+          const saved = await this.orderRepo.saveApproved(o)
+          return ok(saved)
+        })
       })
   }
 }
@@ -122,18 +121,27 @@ export class SalesOrderService {
 
 ### 4.2. 邊界適配：Controller 不寫業務 try-catch
 
-Controller 只負責：接收參數 -> `ValidationPipe` 驗證 DTO -> 呼叫 Service -> 透過 `ResultPresenter` 映射為 HTTP 回應。
+Controller 只負責：`@Implement` 宣告 procedure -> Valibot 驗證輸入 -> 呼叫抽象 Contract -> `unwrapResult` 序列化成功值或轉換領域錯誤 -> Valibot 驗證輸出。業務規則仍由 Service 以 `Result` 回傳；只有 API 邊界可拋出 `ORPCError`。
 
 ```typescript
 // src/modules/sales/controllers/sales.controller.ts
-@Controller('sales')
-export class SalesController {
-  constructor(private readonly salesOrderService: SalesOrderService) {}
+import { Controller } from '@nestjs/common'
+import { Implement, implement } from '@orpc/nest'
+import { unwrapResult } from '@platform/http/result_adapter.js'
+import { RequirePermission } from '@platform/security/index.js'
+import { SalesContract } from '../contracts/index.js'
+import { salesApiContract } from '../contracts/sales_api_contract.js'
 
-  @Post('orders/:id/approve')
-  async approve(@Param('id') id: string, @Res() response: Response) {
-    const result = await this.salesOrderService.approveOrder(id)
-    return ResultPresenter.handle(response, result)
+@Controller()
+export class SalesController {
+  constructor(private readonly sales: SalesContract) {}
+
+  @RequirePermission('sales.order.read')
+  @Implement(salesApiContract.getSalesOrder)
+  getSalesOrder() {
+    return implement(salesApiContract.getSalesOrder).handler(async ({ input }) =>
+      unwrapResult(await this.sales.getSalesOrder(input.id))
+    )
   }
 }
 ```
@@ -142,6 +150,14 @@ export class SalesController {
 
 - `Money`、`Quantity`、`DateRange` 必須為不可變值物件。
 - 所有運算必須返回全新實例，禁止原地修改屬性。
+
+### 4.4. API schema 與傳輸規範
+
+- 每個 procedure 使用 Valibot `strictObject` 定義輸入與完整輸出 snapshot；型別由 schema 推導，不另寫重複 DTO 或前端回應 interface。
+- 金額與數量以整數十進位字串傳輸，輸入驗證保留各欄位正負限制；API 邊界轉成 `bigint`／領域值物件，回應轉回字串。日期使用有效日曆日期 `YYYY-MM-DD`，時間戳輸出 UTC ISO 字串。
+- 業務 API 路徑統一以 `/api` 開頭；每個 procedure 明確定義路徑、HTTP method、成功狀態與領域錯誤，建立操作通常為 201。
+- Guard、Cookie／CSRF、組織作用域、request context 由 NestJS 保留；每個 procedure 都必須獨立宣告權限。未知錯誤與輸出驗證失敗對外回傳遮蔽後的 500。
+- Svelte 前端使用共用 `OpenAPILink` client 與推導型別；401 清除本地 session，403 與業務錯誤保留 session。禁止儲存 access token。
 
 ---
 
@@ -156,6 +172,9 @@ export class SalesController {
    - **狀態機不變量**：處於 `CLOSED` / `VOID` 之終態單據，任何動作皆不可轉出終態。
 3. **業務模組測試**：
    - 外部依賴之 `contracts/` 一律在測試中進行 Mock 隔離，確保單純驗證該模組之用例邏輯。
+4. **API 邊界測試**：
+   - 透過 oRPC `call(controller.method(), input)` 測試 procedure 的輸入／輸出驗證、序列化及已宣告錯誤。
+   - Cookie、CSRF、401／403、組織隔離與 NestJS Guard 必須以 HTTP 整合測試驗證；直接 procedure 呼叫不會執行 NestJS Guard。
 
 ---
 
@@ -179,6 +198,10 @@ AI Agent 在需要建立新元件時，應遵守下列指令規範：
   ```bash
   npm test
   ```
+- **檢查模組邊界與 API 契約的瀏覽器匯入圖**：
+  ```bash
+  npm run architecture:check
+  ```
 
 ---
 
@@ -191,4 +214,5 @@ AI Agent 在需要建立新元件時，應遵守下列指令規範：
 - [ ] 所有業務錯誤是否以 `Result.err(new DomainError())` 回傳，而非 `throw`？
 - [ ] 金額與數量運算是否使用了 `platform/kernel` 的不可變值物件？
 - [ ] 新增的核心演算法是否補齊了基於 `fast-check` 的性質測試（PBT）？
-- [ ] Controller 中是否乾淨無業務 `try-catch`，並交由 `ResultPresenter` 處理？
+- [ ] Controller 是否使用 `@Implement`、獨立權限與 `unwrapResult`，且無業務 `try-catch`？
+- [ ] API 契約是否使用完整 Valibot schemas，且匯入圖未包含任何伺服器依賴？

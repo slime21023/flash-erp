@@ -14,6 +14,20 @@ import {
   VendorInvoiceMatchedEvent,
 } from '@modules/procurement/contracts/index.js'
 
+async function approveOrder(procurement: InMemoryProcurementService, id: string) {
+  const manager = await procurement.approvePurchaseOrder(id, {
+    actorId: 'manager',
+    roles: ['MANAGER'],
+    expectedStepId: 'mgr-review',
+  })
+  if (manager.isErr || manager.value.status === 'APPROVED') return manager
+  return procurement.approvePurchaseOrder(id, {
+    actorId: 'director',
+    roles: ['DIRECTOR'],
+    expectedStepId: 'director-review',
+  })
+}
+
 test('procurement service manages supplier, PO lifecycle, and goods receipt to inventory', async () => {
   const inventoryService = new InMemoryInventoryService()
   const procurementService = new InMemoryProcurementService(inventoryService)
@@ -74,7 +88,7 @@ test('procurement service manages supplier, PO lifecycle, and goods receipt to i
   assert.equal(earlyReceive.isErr, true)
 
   // 5. Approve PO
-  const approved = await procurementService.approvePurchaseOrder('po-1001')
+  const approved = await approveOrder(procurementService, 'po-1001')
   assert.equal(approved.isOk, true)
   if (approved.isOk) {
     assert.equal(approved.value.status, 'APPROVED')
@@ -130,6 +144,7 @@ test('procurement service enforces multi-step approval workflow via ApprovalPipe
   const staffApprove = await procurementService.approvePurchaseOrder('po-expensive', {
     actorId: 'staff-01',
     roles: ['STAFF'],
+    expectedStepId: 'mgr-review',
   })
   assert.equal(staffApprove.isErr, true)
   if (staffApprove.isErr) {
@@ -140,6 +155,7 @@ test('procurement service enforces multi-step approval workflow via ApprovalPipe
   const managerApprove = await procurementService.approvePurchaseOrder('po-expensive', {
     actorId: 'mgr-01',
     roles: ['MANAGER'],
+    expectedStepId: 'mgr-review',
   })
   assert.equal(managerApprove.isOk, true)
   if (managerApprove.isOk) {
@@ -151,6 +167,7 @@ test('procurement service enforces multi-step approval workflow via ApprovalPipe
   const directorApprove = await procurementService.approvePurchaseOrder('po-expensive', {
     actorId: 'dir-01',
     roles: ['DIRECTOR'],
+    expectedStepId: 'director-review',
   })
   assert.equal(directorApprove.isOk, true)
   if (directorApprove.isOk) {
@@ -209,7 +226,7 @@ test('procurement service emits domain events and triggers audit logging', async
   })
 
   // 1. Approve -> emits PurchaseOrderApprovedEvent -> audits PO approval
-  await procurementService.approvePurchaseOrder('po-event-01')
+  await approveOrder(procurementService, 'po-event-01')
 
   // 2. Receive -> emits GoodsReceivedEvent -> audits Goods Receipt
   await procurementService.receiveGoods({
@@ -262,7 +279,7 @@ test('procurement service propagates inventory error when goods receipt movement
     ],
   })
 
-  await procurementService.approvePurchaseOrder('po-2001')
+  await approveOrder(procurementService, 'po-2001')
 
   // Receive goods into non-existent warehouse / item must return Result.err
   const failedReceipt = await procurementService.receiveGoods({
@@ -413,7 +430,7 @@ test('procurement service executes 3-way matching and creates balanced AP vouche
       },
     ],
   })
-  await procurementService.approvePurchaseOrder('po-ap-1')
+  await approveOrder(procurementService, 'po-ap-1')
 
   // 3. Receive Goods
   const grRes = await procurementService.receiveGoods({
@@ -514,7 +531,7 @@ test('procurement service marks invoice as DISPUTED and prevents AP voucher when
       },
     ],
   })
-  await procurementService.approvePurchaseOrder('po-disp')
+  await approveOrder(procurementService, 'po-disp')
 
   // Only received 80 pieces
   await procurementService.receiveGoods({
@@ -564,5 +581,137 @@ test('procurement service marks invoice as DISPUTED and prevents AP voucher when
   assert.equal(apRes.isErr, true)
   if (apRes.isErr) {
     assert.equal(apRes.error.code, 'INVALID_VENDOR_INVOICE_STATE')
+  }
+})
+
+test('PO approval exposes progress, enforces scope and roles, and rejects stale retries', async () => {
+  const emitter = new EventEmitter2()
+  let approvedEvents = 0
+  emitter.on(PurchaseOrderApprovedEvent.EVENT_NAME, () => approvedEvents++)
+  const procurement = new InMemoryProcurementService(undefined, emitter)
+  await procurement.registerSupplier({
+    id: 'supplier',
+    companyId: 'company',
+    code: 'S1',
+    name: 'Supplier',
+  })
+
+  for (const total of [99_999n, 100_000n]) {
+    const id = `threshold-${total}`
+    const created = await procurement.createPurchaseOrder({
+      id,
+      companyId: 'company',
+      supplierId: 'supplier',
+      number: id,
+      lines: [{ itemId: 'item', orderedQuantity: 1n, unitCostMinorUnits: total, currency: 'TWD' }],
+    })
+    assert.equal(created.isOk, true)
+    if (created.isErr) continue
+    assert.equal(created.value.approval?.currentStepId, 'mgr-review')
+    assert.equal(created.value.approval?.requiredRole, 'MANAGER')
+    assert.equal(created.value.approval?.history.length, 0)
+
+    const wrongScope = { scope: { organizationUnitId: 'other-company' } }
+    const forbiddenRead = await procurement.getPurchaseOrder(id, wrongScope)
+    assert.equal(forbiddenRead.isErr, true)
+    if (forbiddenRead.isErr) assert.equal(forbiddenRead.error.code, 'SCOPE_FORBIDDEN')
+    const request = {
+      actorId: 'manager-director',
+      roles: ['MANAGER', 'DIRECTOR'],
+      expectedStepId: 'mgr-review',
+      comment: 'Manager review',
+    }
+    const forbiddenApproval = await procurement.approvePurchaseOrder(id, request, wrongScope)
+    assert.equal(forbiddenApproval.isErr, true)
+    if (forbiddenApproval.isErr) assert.equal(forbiddenApproval.error.code, 'SCOPE_FORBIDDEN')
+    for (const roles of [['ADMIN'], ['DIRECTOR'], []]) {
+      const denied = await procurement.approvePurchaseOrder(id, { ...request, roles })
+      assert.equal(denied.isErr, true)
+      if (denied.isErr) assert.equal(denied.error.code, 'UNAUTHORIZED_APPROVER')
+    }
+
+    const first = await procurement.approvePurchaseOrder(id, request)
+    assert.equal(first.isOk, true)
+    if (first.isErr) continue
+    const managerHistory = first.value.approval?.history[0]
+    assert.equal(managerHistory?.approverId, 'manager-director')
+    assert.equal(managerHistory?.comment, 'Manager review')
+    assert.equal(first.value.approval?.history.length, 1)
+
+    const retry = await procurement.approvePurchaseOrder(id, request)
+    assert.equal(retry.isErr, true)
+    if (retry.isErr) {
+      assert.equal(
+        retry.error.code,
+        total < 100_000n ? 'INVALID_PURCHASE_ORDER_STATE' : 'INVALID_APPROVAL_STEP'
+      )
+    }
+    const loaded = await procurement.getPurchaseOrder(id, {
+      scope: { organizationUnitId: 'company' },
+    })
+    assert.equal(loaded.isOk, true)
+    if (loaded.isErr) continue
+    assert.deepEqual(loaded.value.approval?.history, first.value.approval?.history)
+    if (total >= 100_000n) {
+      assert.equal(loaded.value.status, 'DRAFT')
+      assert.equal(loaded.value.approval?.currentStepId, 'director-review')
+      assert.equal(loaded.value.approval?.requiredRole, 'DIRECTOR')
+      assert.equal(approvedEvents, 1)
+      const completed = await procurement.approvePurchaseOrder(id, {
+        ...request,
+        expectedStepId: 'director-review',
+        comment: 'Director review',
+      })
+      assert.equal(completed.isOk, true)
+      if (completed.isOk) {
+        assert.equal(completed.value.status, 'APPROVED')
+        assert.equal(completed.value.approval?.currentStepId, null)
+        assert.equal(completed.value.approval?.requiredRole, null)
+        assert.equal(completed.value.approval?.history.length, 2)
+        assert.deepEqual(completed.value.approval?.history[0], managerHistory)
+      }
+    } else {
+      assert.equal(loaded.value.status, 'APPROVED')
+      assert.equal(loaded.value.approval?.requiredRole, null)
+    }
+  }
+  assert.equal(approvedEvents, 2)
+  const missing = await procurement.getPurchaseOrder('missing')
+  assert.equal(missing.isErr, true)
+  if (missing.isErr) assert.equal(missing.error.code, 'PURCHASE_ORDER_NOT_FOUND')
+})
+
+test('concurrent identical dual-role requests approve only the requested PO step', async () => {
+  const procurement = new InMemoryProcurementService()
+  await procurement.registerSupplier({
+    id: 'supplier',
+    companyId: 'company',
+    code: 'S1',
+    name: 'Supplier',
+  })
+  await procurement.createPurchaseOrder({
+    id: 'concurrent-po',
+    companyId: 'company',
+    supplierId: 'supplier',
+    number: 'PO-CONCURRENT',
+    lines: [{ itemId: 'item', orderedQuantity: 1n, unitCostMinorUnits: 100_000n, currency: 'TWD' }],
+  })
+  const request = {
+    actorId: 'dual-role',
+    roles: ['MANAGER', 'DIRECTOR'],
+    expectedStepId: 'mgr-review',
+  }
+  const results = await Promise.all([
+    procurement.approvePurchaseOrder('concurrent-po', request),
+    procurement.approvePurchaseOrder('concurrent-po', request),
+  ])
+  assert.equal(results.filter((result) => result.isOk).length, 1)
+  assert.equal(results.filter((result) => result.isErr).length, 1)
+  const loaded = await procurement.getPurchaseOrder('concurrent-po')
+  assert.equal(loaded.isOk, true)
+  if (loaded.isOk) {
+    assert.equal(loaded.value.status, 'DRAFT')
+    assert.equal(loaded.value.approval?.currentStepId, 'director-review')
+    assert.equal(loaded.value.approval?.history.length, 1)
   }
 })

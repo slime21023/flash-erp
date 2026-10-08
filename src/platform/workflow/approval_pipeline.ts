@@ -14,6 +14,12 @@ export type ApprovalRecord = Readonly<{
   decidedAt: string
 }>
 
+export type ApprovalPipelineSnapshot = Readonly<{
+  status: ApprovalStatus
+  currentStepId: string | null
+  history: readonly ApprovalRecord[]
+}>
+
 export type ApprovalStep<TContext> = Readonly<{
   id: string
   name: string
@@ -23,6 +29,14 @@ export type ApprovalStep<TContext> = Readonly<{
 }>
 
 export abstract class ApprovalError extends DomainError {}
+
+export class InvalidApprovalStateError extends ApprovalError {
+  readonly code = 'INVALID_APPROVAL_STATE'
+
+  constructor() {
+    super('Stored approval state is invalid')
+  }
+}
 
 export class ApprovalPublicationError extends ApprovalError {
   readonly code = 'APPROVAL_PUBLICATION_ERROR'
@@ -94,7 +108,7 @@ export class ApprovalPipeline<TContext = unknown> {
     this.#steps = Object.freeze([...steps])
     this.#currentStepIndex = currentStepIndex
     this.#status = status
-    this.#history = Object.freeze([...history])
+    this.#history = Object.freeze(history.map((record) => Object.freeze({ ...record })))
     Object.freeze(this)
   }
 
@@ -114,6 +128,44 @@ export class ApprovalPipeline<TContext = unknown> {
     }
 
     return new ApprovalPipeline(id, context, steps, firstActiveIndex, 'PENDING', [])
+  }
+
+  static restore<TContext>(
+    id: string,
+    context: TContext,
+    steps: readonly ApprovalStep<TContext>[],
+    snapshot: unknown
+  ): Result<ApprovalPipeline<TContext>, ApprovalError> {
+    const invalid = () => err(new InvalidApprovalStateError())
+    if (!isApprovalSnapshot(snapshot)) return invalid()
+
+    let pipeline = ApprovalPipeline.create(id, context, steps)
+    for (const record of snapshot.history) {
+      const result =
+        record.decision === 'APPROVED'
+          ? pipeline.approve(record.stepId, record.approverId, [record.role], record.comment)
+          : pipeline.reject(record.stepId, record.approverId, [record.role], record.comment)
+      if (result.isErr) return invalid()
+      pipeline = result.value
+    }
+    if (snapshot.status === 'CANCELLED') {
+      const cancelled = pipeline.cancel()
+      if (cancelled.isErr) return invalid()
+      pipeline = cancelled.value
+    }
+    if (pipeline.status !== snapshot.status || pipeline.currentStepId !== snapshot.currentStepId)
+      return invalid()
+
+    return ok(
+      new ApprovalPipeline(
+        id,
+        context,
+        steps,
+        pipeline.#currentStepIndex,
+        pipeline.status,
+        snapshot.history
+      )
+    )
   }
 
   get id(): string {
@@ -146,6 +198,14 @@ export class ApprovalPipeline<TContext = unknown> {
 
   get history(): readonly ApprovalRecord[] {
     return this.#history
+  }
+
+  get snapshot(): ApprovalPipelineSnapshot {
+    return Object.freeze({
+      status: this.#status,
+      currentStepId: this.currentStepId,
+      history: this.#history,
+    })
   }
 
   canApprove(approverRoles: readonly string[]): boolean {
@@ -314,4 +374,35 @@ export class ApprovalPipeline<TContext = unknown> {
     }
     return -1
   }
+}
+
+function isApprovalSnapshot(value: unknown): value is ApprovalPipelineSnapshot {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false
+  const snapshot = value as Record<string, unknown>
+  if (
+    Object.keys(snapshot).length !== 3 ||
+    !Object.keys(snapshot).every((key) => ['status', 'currentStepId', 'history'].includes(key)) ||
+    !['PENDING', 'APPROVED', 'REJECTED', 'CANCELLED'].includes(snapshot.status as string) ||
+    !(snapshot.currentStepId === null || typeof snapshot.currentStepId === 'string') ||
+    !Array.isArray(snapshot.history)
+  )
+    return false
+
+  return Array.from(snapshot.history).every((value: unknown) => {
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) return false
+    const record = value as Record<string, unknown>
+    const fields = ['stepId', 'approverId', 'role', 'decision', 'decidedAt']
+    return (
+      fields.every((key) => Object.hasOwn(record, key)) &&
+      Object.keys(record).every((key) => fields.includes(key) || key === 'comment') &&
+      ['stepId', 'approverId', 'role'].every(
+        (key) => typeof record[key] === 'string' && record[key].trim().length > 0
+      ) &&
+      (record.decision === 'APPROVED' || record.decision === 'REJECTED') &&
+      (record.comment === undefined || typeof record.comment === 'string') &&
+      typeof record.decidedAt === 'string' &&
+      Number.isFinite(Date.parse(record.decidedAt)) &&
+      new Date(record.decidedAt).toISOString() === record.decidedAt
+    )
+  })
 }

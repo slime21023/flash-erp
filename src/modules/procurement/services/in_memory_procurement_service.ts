@@ -2,13 +2,11 @@ import { err, ok } from '@platform/fp/index.js'
 import type { Result } from '@platform/fp/index.js'
 import type { TransactionOptions } from '@platform/persistence/index.js'
 import { Money } from '@platform/kernel/index.js'
+import { scopeMismatch } from '@platform/context/index.js'
+import { ScopeForbiddenError } from '@platform/security/index.js'
 import type { InventoryContract } from '@modules/inventory/contracts/index.js'
 import type { FinanceContract, JournalLine } from '@modules/finance/contracts/index.js'
-import {
-  ApprovalPipeline,
-  type ApprovalStep,
-  type ApprovalError,
-} from '@platform/workflow/index.js'
+import { ApprovalPipeline, type ApprovalError } from '@platform/workflow/index.js'
 import {
   AccountsPayablePostingError,
   AccountsPayableVoucherCreatedEvent,
@@ -30,6 +28,7 @@ import {
   VendorInvoiceNotFoundError,
   type AccountsPayableVoucherSnapshot,
   type ApproverContext,
+  type PurchaseOrderApproverContext,
   type ConvertRequisitionToPurchaseOrderInput,
   type CreateApVoucherInput,
   type CreatePurchaseOrderInput,
@@ -48,6 +47,7 @@ import {
 } from '../contracts/index.js'
 import type { EventEmitter2 } from '@nestjs/event-emitter'
 import { ThreeWayMatcher, calculateTaxAndTotal } from './three_way_matcher.js'
+import { createPurchaseOrderPipeline, purchaseOrderApproval } from './purchase_order_approval.js'
 
 export class InMemoryProcurementService extends ProcurementContract {
   readonly #suppliers = new Map<string, SupplierSnapshot>()
@@ -155,6 +155,7 @@ export class InMemoryProcurementService extends ProcurementContract {
       return err(new SupplierNotFoundError(supplierId))
     }
 
+    const pipeline = createPurchaseOrderPipeline(id, lines)
     const po: PurchaseOrderSnapshot = Object.freeze({
       id,
       companyId,
@@ -162,77 +163,69 @@ export class InMemoryProcurementService extends ProcurementContract {
       number,
       status: 'DRAFT',
       lines: Object.freeze(lines),
+      approval: purchaseOrderApproval(pipeline),
     })
 
+    this.#poPipelines.set(id, pipeline)
     this.#purchaseOrders.set(id, po)
+    return ok(po)
+  }
+
+  async getPurchaseOrder(
+    id: string,
+    options?: TransactionOptions
+  ): Promise<Result<PurchaseOrderSnapshot, PurchaseOrderNotFoundError | ScopeForbiddenError>> {
+    const po = this.#purchaseOrders.get(id)
+    if (!po) return err(new PurchaseOrderNotFoundError(id))
+    const selectedScope = scopeMismatch(po.companyId, options)
+    if (selectedScope) return err(new ScopeForbiddenError(selectedScope, 'purchase order'))
     return ok(po)
   }
 
   async approvePurchaseOrder(
     id: string,
-    approver?: ApproverContext,
-    _options?: TransactionOptions
+    approver: PurchaseOrderApproverContext,
+    options?: TransactionOptions
   ): Promise<
     Result<
       PurchaseOrderSnapshot,
-      PurchaseOrderNotFoundError | InvalidPurchaseOrderStateError | ApprovalError
+      | PurchaseOrderNotFoundError
+      | InvalidPurchaseOrderStateError
+      | ApprovalError
+      | ScopeForbiddenError
     >
   > {
-    const po = this.#purchaseOrders.get(id)
-    if (!po) {
-      return err(new PurchaseOrderNotFoundError(id))
-    }
+    const poResult = await this.getPurchaseOrder(id, options)
+    if (poResult.isErr) return err(poResult.error)
+    const po = poResult.value
 
     if (po.status !== 'DRAFT') {
       return err(new InvalidPurchaseOrderStateError(po.status, 'approve'))
     }
 
-    if (approver) {
-      const totalAmount = po.lines.reduce(
-        (sum, line) => sum + line.orderedQuantity * line.unitCostMinorUnits,
-        0n
-      )
-      let pipeline = this.#poPipelines.get(id)
-      if (!pipeline) {
-        const steps: ApprovalStep<{ totalAmount: bigint }>[] = [
-          { id: 'mgr-review', name: 'Manager Review', requiredRole: 'MANAGER' },
-          {
-            id: 'director-review',
-            name: 'Director Review',
-            requiredRole: 'DIRECTOR',
-            condition: (ctx) => ctx.totalAmount >= 100_000n,
-          },
-        ]
-        pipeline = ApprovalPipeline.create(id, { totalAmount }, steps)
-      }
-
-      const approveRes = pipeline.approve(
-        pipeline.currentStepId!,
-        approver.actorId,
-        approver.roles,
-        approver.comment
-      )
-      if (approveRes.isErr) {
-        return err(approveRes.error)
-      }
-      this.#poPipelines.set(id, approveRes.value)
-      if (approveRes.value.status !== 'APPROVED') {
-        return ok(po)
-      }
-    }
-
-    const approved: PurchaseOrderSnapshot = Object.freeze({
-      ...po,
-      status: 'APPROVED',
-    })
-
-    this.#purchaseOrders.set(id, approved)
-    this.eventEmitter?.emit(
-      PurchaseOrderApprovedEvent.EVENT_NAME,
-      new PurchaseOrderApprovedEvent(po.id, po.companyId, po.supplierId, new Date())
+    const pipeline = this.#poPipelines.get(id) ?? createPurchaseOrderPipeline(id, po.lines)
+    const approveResult = pipeline.approve(
+      approver.expectedStepId,
+      approver.actorId,
+      approver.roles,
+      approver.comment
     )
+    if (approveResult.isErr) return err(approveResult.error)
 
-    return ok(approved)
+    const updated: PurchaseOrderSnapshot = Object.freeze({
+      ...po,
+      status: approveResult.value.status === 'APPROVED' ? 'APPROVED' : 'DRAFT',
+      approval: purchaseOrderApproval(approveResult.value),
+    })
+    this.#poPipelines.set(id, approveResult.value)
+    this.#purchaseOrders.set(id, updated)
+    if (updated.status === 'APPROVED') {
+      this.eventEmitter?.emit(
+        PurchaseOrderApprovedEvent.EVENT_NAME,
+        new PurchaseOrderApprovedEvent(po.id, po.companyId, po.supplierId, new Date())
+      )
+    }
+    return ok(updated)
   }
 
   async receiveGoods(

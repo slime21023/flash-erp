@@ -1,14 +1,335 @@
-@import 'tailwindcss';
+@import 'bulma/css/bulma.min.css';
 
 :root {
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
   color-scheme: light;
+  --bulma-primary-h: 243;
+  --bulma-primary-s: 75%;
+  --bulma-primary-l: 59%;
+  --bulma-primary-invert: #ffffff;
+  --bulma-primary-invert-h: 0;
+  --bulma-primary-invert-s: 0%;
+  --bulma-primary-invert-l: 100%;
+  --bulma-link-h: 243;
+  --bulma-link-s: 75%;
+  --bulma-link-l: 59%;
+  --bulma-body-background-color: #f5f7fb;
+  --bulma-scheme-main: #ffffff;
+  --bulma-scheme-main-bis: #f8fafc;
+  --bulma-border: #dbe2ea;
+  --bulma-radius-small: 0.375rem;
+  --bulma-radius: 0.5rem;
+  --bulma-radius-large: 0.75rem;
 }
 
 body {
   margin: 0;
   padding: 0;
-  background-color: #f8fafc;
-  color: #0f172a;
+  background-color: var(--bulma-body-background-color);
+  color: var(--bulma-text);
   min-height: 100vh;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+.erp-shell {
+  min-height: 100vh;
+}
+
+.erp-main {
+  flex: 1;
+  min-width: 0;
+  overflow-y: auto;
+}
+
+.erp-page {
+  width: min(100% - 2rem, 80rem);
+  margin-inline: auto;
+  padding-block: 1.5rem 2.5rem;
+}
+
+.erp-page-header {
+  margin-bottom: 1.5rem;
+}
+
+.erp-eyebrow {
+  color: var(--bulma-primary);
+  font-size: 0.6875rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.erp-page-title {
+  margin: 0.25rem 0 0;
+  color: var(--bulma-text-strong);
+  font-size: 1.35rem;
+  font-weight: 800;
+}
+
+.erp-page-hint {
+  margin-top: 0.25rem;
+  color: #526071;
+  font-size: 0.8rem;
+}
+
+.erp-panel {
+  display: grid;
+  gap: 1rem;
+  margin-bottom: 1.25rem;
+  padding: 1.25rem;
+  background: var(--bulma-scheme-main);
+  border: 1px solid var(--bulma-border);
+  border-radius: var(--bulma-radius-large);
+  box-shadow: 0 1px 2px rgb(15 23 42 / 4%);
+}
+
+.erp-panel:last-child {
+  margin-bottom: 0;
+}
+
+.erp-panel-title {
+  margin: 0;
+  color: var(--bulma-text-strong);
+  font-size: 0.95rem;
+  font-weight: 700;
+}
+
+.erp-form-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
+  gap: 0.75rem;
+  align-items: end;
+}
+
+.erp-form-grid + .erp-form-grid,
+.erp-form-grid + .erp-result,
+.erp-result + .erp-form-grid {
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--bulma-border-weak);
+}
+
+.erp-form-grid > label {
+  display: grid;
+  gap: 0.3rem;
+  color: var(--bulma-text);
+  font-size: 0.75rem;
+}
+
+.erp-form-grid > .button {
+  align-self: end;
+}
+
+.erp-result,
+.erp-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 0.75rem;
+  font-size: 0.75rem;
+}
+
+.erp-result pre {
+  min-width: 0;
+  flex: 1 1 20rem;
+  max-width: 100%;
+  overflow: auto;
+  margin: 0;
+  padding: 0.75rem;
+  border-radius: var(--bulma-radius);
+  background: #172033;
+  color: #e2e8f0;
+  font-size: 0.75rem;
+}
+
+.erp-code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+.erp-list {
+  display: grid;
+  gap: 0.5rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--bulma-border-weak);
+}
+
+.erp-list-item {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  padding: 0.75rem;
+  border-radius: var(--bulma-radius);
+  background: var(--bulma-scheme-main-bis);
+  font-size: 0.75rem;
+}
+
+.erp-list-item span {
+  color: var(--bulma-text-weak);
+}
+
+.erp-table-wrap {
+  overflow-x: auto;
+}
+
+.erp-footer {
+  min-height: 2rem;
+  padding: 0.5rem 1rem;
+  background: var(--bulma-scheme-main);
+  border-top: 1px solid var(--bulma-border);
+  color: var(--bulma-text-weak);
+  font-size: 0.6875rem;
+}
+
+.erp-navbar {
+  border-bottom: 1px solid var(--bulma-border);
+  box-shadow: 0 1px 3px rgb(15 23 42 / 6%);
+}
+
+.erp-brand {
+  color: var(--bulma-primary) !important;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+}
+
+.erp-navbar .navbar-item,
+.erp-navbar .navbar-link {
+  color: var(--bulma-text);
+}
+
+.erp-navbar .navbar-item:hover,
+.erp-navbar .navbar-link:hover {
+  background: var(--bulma-scheme-main-bis);
+  color: var(--bulma-primary);
+}
+
+@media (max-width: 1023px) {
+  .erp-navbar .navbar-menu.is-active {
+    display: flex;
+    padding: 0;
+    box-shadow: none;
+  }
+
+  .erp-navbar .navbar-start {
+    display: none;
+  }
+
+  .erp-navbar .navbar-end {
+    margin-left: auto;
+  }
+
+  .erp-navbar .navbar-item {
+    padding: 0.5rem;
+  }
+}
+
+.erp-user-avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.75rem;
+  height: 1.75rem;
+  border-radius: 50%;
+  background: var(--bulma-primary);
+  color: var(--bulma-primary-invert);
+  font-size: 0.75rem;
+  font-weight: 700;
+}
+
+.erp-app-modal .modal-card {
+  width: min(56rem, calc(100% - 2rem));
+}
+
+.erp-app-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+
+.erp-app-tile {
+  display: grid;
+  gap: 0.35rem;
+  min-height: 8rem;
+  padding: 1rem;
+  text-align: left;
+  white-space: normal;
+}
+
+.erp-app-tile.is-selected {
+  border-color: var(--bulma-primary);
+  box-shadow: 0 0 0 2px var(--bulma-primary-light);
+}
+
+.erp-app-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.25rem;
+  height: 2.25rem;
+  margin-bottom: 0.25rem;
+  border-radius: var(--bulma-radius);
+  background: var(--bulma-primary-light);
+  color: var(--bulma-primary);
+}
+
+.erp-status-track {
+  display: flex;
+  max-width: 100%;
+  overflow-x: auto;
+  border: 1px solid var(--bulma-border);
+  border-radius: var(--bulma-radius);
+  background: var(--bulma-scheme-main-bis);
+}
+
+.erp-status-stage {
+  flex: 0 0 auto;
+  padding: 0.4rem 0.7rem;
+  border-right: 1px solid var(--bulma-border);
+  color: var(--bulma-text);
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+.erp-status-stage:last-child {
+  border-right: 0;
+}
+
+.erp-status-stage.is-active {
+  background: var(--bulma-primary);
+  color: var(--bulma-primary-invert);
+}
+
+@media (max-width: 768px) {
+  .erp-page {
+    width: min(100% - 1rem, 80rem);
+    padding-block: 1rem 2rem;
+  }
+
+  .erp-panel {
+    padding: 1rem;
+  }
+
+  .erp-app-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .erp-footer {
+    display: grid;
+    gap: 0.2rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+  }
 }

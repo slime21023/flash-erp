@@ -1,4 +1,5 @@
 import { Column, CreateDateColumn, Entity, Index, OneToMany, PrimaryColumn } from 'typeorm'
+import type { ApprovalPipelineSnapshot } from '@platform/workflow/index.js'
 import type { PurchaseOrderLineEntity } from './purchase_order_line.entity.js'
 
 @Entity('purchase_orders')
@@ -18,6 +19,9 @@ export class PurchaseOrderEntity {
 
   @Column({ type: 'varchar', length: 16, default: 'DRAFT' })
   status!: 'DRAFT' | 'APPROVED' | 'CLOSED' | 'VOID'
+
+  @Column({ name: 'approval_state', type: 'jsonb', nullable: true })
+  approvalState!: ApprovalPipelineSnapshot | null
 
   @CreateDateColumn({ name: 'created_at', type: 'timestamptz' })
   createdAt!: Date

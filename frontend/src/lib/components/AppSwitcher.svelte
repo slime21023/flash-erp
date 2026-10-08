@@ -1,4 +1,17 @@
 <script lang="ts">
+  import { tick } from 'svelte'
+  import {
+    BadgePercent,
+    BookOpen,
+    Boxes,
+    Building2,
+    Cog,
+    History,
+    Landmark,
+    LayoutDashboard,
+    ShieldCheck,
+    ShoppingCart,
+  } from 'lucide-svelte'
   import type { ActiveAppId } from '../types.js'
 
   interface Props {
@@ -10,119 +23,156 @@
 
   let { activeApp, isOpen, onSelectApp, onClose }: Props = $props()
 
-  const apps: { id: ActiveAppId; name: string; en: string; iconBg: string; desc: string; iconChar: string }[] = [
+  let modalRoot = $state<HTMLDivElement | undefined>(undefined)
+  let closeButton = $state<HTMLButtonElement | undefined>(undefined)
+
+  $effect(() => {
+    if (!isOpen) return
+
+    const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null
+    void tick().then(() => closeButton?.focus())
+
+    return () => previousFocus?.focus()
+  })
+
+  function handleKeydown(event: KeyboardEvent) {
+    if (event.key === 'Escape') {
+      event.preventDefault()
+      onClose()
+      return
+    }
+
+    if (event.key !== 'Tab' || !modalRoot) return
+
+    const focusable = Array.from(
+      modalRoot.querySelectorAll<HTMLElement>(
+        'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+      )
+    )
+    if (focusable.length === 0) return
+
+    const first = focusable[0]
+    const last = focusable[focusable.length - 1]
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault()
+      last.focus()
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault()
+      first.focus()
+    }
+  }
+
+  const icons = {
+    BadgePercent,
+    BookOpen,
+    Boxes,
+    Building2,
+    Cog,
+    History,
+    Landmark,
+    LayoutDashboard,
+    ShieldCheck,
+    ShoppingCart,
+  }
+
+  const apps: { id: ActiveAppId; name: string; en: string; icon: string; desc: string }[] = [
     {
       id: 'dashboard',
       name: '系統總覽',
       en: 'App Store / Modules',
-      iconBg: 'from-violet-500 to-purple-600',
       desc: '依賴拓撲解析與 9 大模組清單',
-      iconChar: '⚡',
+      icon: 'LayoutDashboard',
     },
     {
       id: 'sales',
       name: '銷售管理',
       en: 'Sales / OTC',
-      iconBg: 'from-blue-500 to-indigo-600',
       desc: '訂單審批、客戶信用與銷貨出庫',
-      iconChar: '🏷️',
+      icon: 'BadgePercent',
     },
     {
       id: 'procurement',
       name: '採購管理',
       en: 'Procurement / P2P',
-      iconBg: 'from-teal-500 to-emerald-600',
       desc: '請購單、採購單與三向匹配 (3-Way Match)',
-      iconChar: '🛒',
+      icon: 'ShoppingCart',
     },
     {
       id: 'inventory',
       name: '倉儲庫存',
       en: 'Inventory & ATP',
-      iconBg: 'from-amber-500 to-orange-600',
       desc: '庫存水位、移動平均成本與調撥',
-      iconChar: '📦',
+      icon: 'Boxes',
     },
     {
       id: 'manufacturing',
       name: '生產製造',
       en: 'Manufacturing & Costing',
-      iconBg: 'from-rose-500 to-red-600',
       desc: 'BOM 防循環展算、工單發料與製費分攤',
-      iconChar: '⚙️',
+      icon: 'Cog',
     },
     {
       id: 'treasury',
       name: '出納資金',
       en: 'Treasury & Cash',
-      iconBg: 'from-cyan-500 to-blue-600',
       desc: '收付款單、單據沖銷與銀行自動對帳',
-      iconChar: '🏦',
+      icon: 'Landmark',
     },
     {
       id: 'finance',
       name: '財務總帳',
       en: 'General Ledger',
-      iconBg: 'from-emerald-500 to-teal-700',
       desc: '平衡傳票、會計期間與即時試算表',
-      iconChar: '📖',
+      icon: 'BookOpen',
     },
     {
       id: 'organization',
       name: '企業架構',
       en: 'Organization & RBAC',
-      iconBg: 'from-slate-600 to-slate-800',
       desc: '公司/廠區/倉庫組織樹與多公司隔離',
-      iconChar: '🏢',
+      icon: 'Building2',
     },
   ]
 </script>
 
 {#if isOpen}
-  <!-- Backdrop -->
   <div
-    role="presentation"
-    onclick={onClose}
-    class="fixed inset-0 bg-slate-950/70 backdrop-blur-sm z-40 transition-opacity animate-in fade-in"
-  ></div>
-
-  <!-- App Drawer Modal -->
-  <div
+    bind:this={modalRoot}
+    class="modal is-active erp-app-modal"
     role="dialog"
     aria-modal="true"
-    class="fixed top-14 left-0 right-0 max-w-4xl mx-auto p-6 bg-slate-900 border border-slate-700 shadow-2xl rounded-b-2xl z-50 text-white animate-in slide-in-from-top-4 duration-200"
+    aria-labelledby="app-switcher-title"
+    tabindex="-1"
+    onkeydown={handleKeydown}
   >
-    <div class="flex items-center justify-between pb-4 mb-4 border-b border-slate-800">
-      <div>
-        <h2 class="text-base font-bold text-slate-100">應用程式啟動器 (Application Menu)</h2>
-        <p class="text-xs text-slate-400">點選進入各業務領域模組，所有領域共享統一單體模組架構</p>
-      </div>
-      <button
-        onclick={onClose}
-        class="text-xs px-2 py-1 bg-slate-800 hover:bg-slate-700 rounded text-slate-300 transition"
-      >
-        關閉 (ESC)
-      </button>
-    </div>
-
-    <!-- 4x2 Grid of Odoo style App Tiles -->
-    <div class="grid grid-cols-2 sm:grid-cols-4 gap-4">
-      {#each apps as app}
-        <button
-          onclick={() => {
-            onSelectApp(app.id)
-            onClose()
-          }}
-          class="flex flex-col items-center text-center p-4 rounded-xl border transition-all duration-150 group text-left {activeApp === app.id ? 'bg-slate-800/90 border-indigo-500 shadow-lg shadow-indigo-500/10' : 'bg-slate-800/40 border-slate-700/60 hover:bg-slate-800 hover:border-slate-600'}"
-        >
-          <div class="w-12 h-12 rounded-xl bg-gradient-to-br {app.iconBg} flex items-center justify-center text-2xl shadow-md mb-2 group-hover:scale-105 transition-transform">
-            {app.iconChar}
-          </div>
-          <span class="font-semibold text-xs text-slate-100">{app.name}</span>
-          <span class="text-[10px] text-slate-400 mb-1">{app.en}</span>
-          <p class="text-[10px] text-slate-500 line-clamp-1">{app.desc}</p>
-        </button>
-      {/each}
+    <div class="modal-background" role="presentation" onclick={onClose}></div>
+    <div class="modal-card">
+      <header class="modal-card-head">
+        <div>
+          <h2 id="app-switcher-title" class="modal-card-title">應用程式啟動器</h2>
+          <p class="is-size-7 has-text-grey-dark">點選進入各業務領域模組，所有領域共享統一單體模組架構</p>
+        </div>
+        <button bind:this={closeButton} class="delete" aria-label="關閉" onclick={onClose}></button>
+      </header>
+      <section class="modal-card-body">
+        <div class="erp-app-grid">
+          {#each apps as app}
+            {@const Icon = icons[app.icon as keyof typeof icons]}
+            <button
+              onclick={() => {
+                onSelectApp(app.id)
+                onClose()
+              }}
+              class="button is-white erp-app-tile {activeApp === app.id ? 'is-selected' : ''}"
+            >
+              <span class="erp-app-icon"><Icon size={22} strokeWidth={1.8} /></span>
+              <span class="has-text-weight-semibold is-size-7">{app.name}</span>
+              <span class="is-size-7 has-text-grey">{app.en}</span>
+              <span class="is-size-7 has-text-grey-dark">{app.desc}</span>
+            </button>
+          {/each}
+        </div>
+      </section>
     </div>
   </div>
 {/if}

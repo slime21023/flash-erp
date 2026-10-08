@@ -4,7 +4,7 @@ import {
   type ExecutionContext,
   type NestInterceptor,
 } from '@nestjs/common'
-import { defer, type Observable } from 'rxjs'
+import { Observable } from 'rxjs'
 import { requestIdFromHeader, runWithRequestContext } from './request_context.js'
 
 @Injectable()
@@ -31,8 +31,10 @@ export class RequestContextInterceptor implements NestInterceptor {
         ? scopeHeader.trim()
         : undefined
 
-    return defer(() =>
-      runWithRequestContext({ actorId, requestId, organizationUnitId }, () => next.handle())
+    return new Observable((subscriber) =>
+      runWithRequestContext({ actorId, requestId, organizationUnitId }, () =>
+        next.handle().subscribe(subscriber)
+      )
     )
   }
 }

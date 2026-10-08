@@ -1,32 +1,35 @@
-import { Body, Controller, Post, Res } from '@nestjs/common'
-import type { Response } from 'express'
-import { ResultPresenter } from '@platform/http/index.js'
+import { Controller } from '@nestjs/common'
+import { Implement, implement } from '@orpc/nest'
+import { unwrapResult } from '@platform/http/result_adapter.js'
 import { RequirePermission } from '@platform/security/index.js'
 import { InventoryContract } from '../contracts/index.js'
-import { RegisterItemDto, RegisterUnitDto, RegisterWarehouseDto } from '../dto/inventory_dto.js'
+import { inventoryApiContract } from '../contracts/inventory_api_contract.js'
 
-@Controller('inventory')
+@Controller()
 export class InventoryMasterController {
   constructor(private readonly inventory: InventoryContract) {}
 
   @RequirePermission('inventory.master.write')
-  @Post('units')
-  async unit(@Body() dto: RegisterUnitDto, @Res() res: Response) {
-    const result = await this.inventory.registerUnit(dto)
-    return ResultPresenter.handle(res, result, { successStatus: 201 })
+  @Implement(inventoryApiContract.master.unit)
+  unit() {
+    return implement(inventoryApiContract.master.unit).handler(async ({ input }) =>
+      unwrapResult(await this.inventory.registerUnit(input))
+    )
   }
 
   @RequirePermission('inventory.master.write')
-  @Post('items')
-  async item(@Body() dto: RegisterItemDto, @Res() res: Response) {
-    const result = await this.inventory.registerItem(dto)
-    return ResultPresenter.handle(res, result, { successStatus: 201 })
+  @Implement(inventoryApiContract.master.item)
+  item() {
+    return implement(inventoryApiContract.master.item).handler(async ({ input }) =>
+      unwrapResult(await this.inventory.registerItem(input))
+    )
   }
 
   @RequirePermission('inventory.master.write')
-  @Post('warehouses')
-  async warehouse(@Body() dto: RegisterWarehouseDto, @Res() res: Response) {
-    const result = await this.inventory.registerWarehouse(dto)
-    return ResultPresenter.handle(res, result, { successStatus: 201 })
+  @Implement(inventoryApiContract.master.warehouse)
+  warehouse() {
+    return implement(inventoryApiContract.master.warehouse).handler(async ({ input }) =>
+      unwrapResult(await this.inventory.registerWarehouse(input))
+    )
   }
 }

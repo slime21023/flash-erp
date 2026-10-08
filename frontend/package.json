@@ -19,8 +19,11 @@
     "vite": "^8.2.2"
   },
   "dependencies": {
-    "@tailwindcss/vite": "^4.3.3",
+    "@orpc/client": "1.15.5",
+    "@orpc/contract": "1.15.5",
+    "@orpc/openapi-client": "1.15.5",
+    "bulma": "^1.0.4",
     "lucide-svelte": "^1.0.1",
-    "tailwindcss": "^4.3.3"
+    "valibot": "1.5.0"
   }
 }

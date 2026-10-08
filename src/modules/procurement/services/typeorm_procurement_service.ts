@@ -12,9 +12,8 @@ import { Money } from '@platform/kernel/index.js'
 import { scopeMismatch } from '@platform/context/index.js'
 import { ScopeForbiddenError } from '@platform/security/index.js'
 import {
-  ApprovalPipeline,
+  InvalidApprovalStateError,
   ApprovalPublicationError,
-  type ApprovalStep,
   type ApprovalError,
 } from '@platform/workflow/index.js'
 import { InventoryContract } from '@modules/inventory/contracts/index.js'
@@ -40,6 +39,7 @@ import {
   VendorInvoiceNotFoundError,
   type AccountsPayableVoucherSnapshot,
   type ApproverContext,
+  type PurchaseOrderApproverContext,
   type ConvertRequisitionToPurchaseOrderInput,
   type CreateApVoucherInput,
   type CreatePurchaseOrderInput,
@@ -67,6 +67,43 @@ import { PurchaseRequisitionLineEntity } from '../entities/purchase_requisition_
 import { VendorInvoiceEntity } from '../entities/vendor_invoice.entity.js'
 import { VendorInvoiceLineEntity } from '../entities/vendor_invoice_line.entity.js'
 import { ThreeWayMatcher, calculateTaxAndTotal } from './three_way_matcher.js'
+import {
+  createPurchaseOrderPipeline,
+  purchaseOrderApproval,
+  purchaseOrderPipeline,
+} from './purchase_order_approval.js'
+
+function snapshotPurchaseOrder(
+  po: PurchaseOrderEntity
+): Result<PurchaseOrderSnapshot, ApprovalError> {
+  const lines = (po.lines ?? []).map((line) => ({
+    itemId: line.itemId,
+    orderedQuantity: BigInt(line.orderedQuantity),
+    unitCostMinorUnits: BigInt(line.unitCostMinorUnits),
+    currency: line.currency,
+  }))
+  let approval: PurchaseOrderSnapshot['approval'] = null
+  if (po.status === 'DRAFT' || po.approvalState != null) {
+    const pipeline = purchaseOrderPipeline(po.id, lines, po.approvalState)
+    if (pipeline.isErr) return err(pipeline.error)
+    if (
+      (po.status === 'DRAFT' && pipeline.value.status !== 'PENDING') ||
+      (po.status === 'APPROVED' && pipeline.value.status !== 'APPROVED')
+    ) {
+      return err(new InvalidApprovalStateError())
+    }
+    approval = purchaseOrderApproval(pipeline.value)
+  }
+  return ok({
+    id: po.id,
+    companyId: po.companyId,
+    supplierId: po.supplierId,
+    number: po.number,
+    status: po.status,
+    lines,
+    approval,
+  })
+}
 
 @Injectable()
 export class TypeOrmProcurementService extends ProcurementContract {
@@ -202,12 +239,14 @@ export class TypeOrmProcurementService extends ProcurementContract {
       }
 
       try {
+        const pipeline = createPurchaseOrderPipeline(id, normalizedLines)
         const po = client.create(PurchaseOrderEntity, {
           id,
           companyId,
           supplierId,
           number,
           status: 'DRAFT',
+          approvalState: pipeline.snapshot,
         })
         await client.save(po)
 
@@ -229,6 +268,7 @@ export class TypeOrmProcurementService extends ProcurementContract {
           number,
           status: 'DRAFT',
           lines: normalizedLines,
+          approval: purchaseOrderApproval(pipeline),
         })
       } catch {
         return err(new ProcurementError(`Unable to create purchase order: ${id}`))
@@ -236,9 +276,26 @@ export class TypeOrmProcurementService extends ProcurementContract {
     })
   }
 
+  async getPurchaseOrder(
+    id: string,
+    options?: TransactionOptions
+  ): Promise<
+    Result<PurchaseOrderSnapshot, PurchaseOrderNotFoundError | ApprovalError | ScopeForbiddenError>
+  > {
+    const manager = options?.client ?? this.poRepo.manager
+    const po = await manager.findOne(PurchaseOrderEntity, {
+      where: { id },
+      relations: ['lines'],
+    })
+    if (!po) return err(new PurchaseOrderNotFoundError(id))
+    const selectedScope = scopeMismatch(po.companyId, options)
+    if (selectedScope) return err(new ScopeForbiddenError(selectedScope, 'purchase order'))
+    return snapshotPurchaseOrder(po)
+  }
+
   async approvePurchaseOrder(
     id: string,
-    approver?: ApproverContext,
+    approver: PurchaseOrderApproverContext,
     options?: TransactionOptions
   ): Promise<
     Result<
@@ -259,85 +316,41 @@ export class TypeOrmProcurementService extends ProcurementContract {
       const po = await manager
         .createQueryBuilder(PurchaseOrderEntity, 'po')
         .leftJoinAndSelect('po.lines', 'lines')
-        .setLock('pessimistic_write')
+        .setLock('pessimistic_write', undefined, ['po'])
         .where('po.id = :id', { id })
         .getOne()
 
-      if (!po) {
-        return err(new PurchaseOrderNotFoundError(id))
-      }
-
+      if (!po) return err(new PurchaseOrderNotFoundError(id))
       const selectedScope = scopeMismatch(po.companyId, options)
       if (selectedScope) return err(new ScopeForbiddenError(selectedScope, 'purchase order'))
-
       if (po.status !== 'DRAFT') {
         return err(new InvalidPurchaseOrderStateError(po.status, 'approve'))
       }
 
-      if (approver) {
-        const totalAmount = (po.lines ?? []).reduce(
-          (sum, line) => sum + BigInt(line.orderedQuantity) * BigInt(line.unitCostMinorUnits),
-          0n
-        )
-        const steps: ApprovalStep<{ totalAmount: bigint }>[] = [
-          { id: 'mgr-review', name: 'Manager Review', requiredRole: 'MANAGER' },
-          {
-            id: 'director-review',
-            name: 'Director Review',
-            requiredRole: 'DIRECTOR',
-            condition: (ctx) => ctx.totalAmount >= 100_000n,
-          },
-        ]
-        const pipeline = ApprovalPipeline.create(id, { totalAmount }, steps)
-        const approveRes = pipeline.approve(
-          pipeline.currentStepId!,
-          approver.actorId,
-          approver.roles,
-          approver.comment
-        )
-        if (approveRes.isErr) {
-          return err(approveRes.error)
-        }
-        if (approveRes.value.status !== 'APPROVED') {
-          return ok({
-            id: po.id,
-            companyId: po.companyId,
-            supplierId: po.supplierId,
-            number: po.number,
-            status: po.status,
-            lines: (po.lines ?? []).map((l) => ({
-              itemId: l.itemId,
-              orderedQuantity: BigInt(l.orderedQuantity),
-              unitCostMinorUnits: BigInt(l.unitCostMinorUnits),
-              currency: l.currency,
-            })),
-          })
-        }
-      }
+      const pipeline = purchaseOrderPipeline(po.id, po.lines ?? [], po.approvalState)
+      if (pipeline.isErr) return err(pipeline.error)
+      if (pipeline.value.status !== 'PENDING') return err(new InvalidApprovalStateError())
+      const approved = pipeline.value.approve(
+        approver.expectedStepId,
+        approver.actorId,
+        approver.roles,
+        approver.comment
+      )
+      if (approved.isErr) return err(approved.error)
 
-      po.status = 'APPROVED'
+      po.approvalState = approved.value.snapshot
+      if (approved.value.status === 'APPROVED') po.status = 'APPROVED'
       await manager.save(po)
 
-      const eventResult = await this.outbox.enqueue(
-        PurchaseOrderApprovedEvent.EVENT_NAME,
-        new PurchaseOrderApprovedEvent(po.id, po.companyId, po.supplierId, new Date()),
-        { client: manager }
-      )
-      if (eventResult.isErr) return err(new ApprovalPublicationError(eventResult.error.message))
-
-      return ok({
-        id: po.id,
-        companyId: po.companyId,
-        supplierId: po.supplierId,
-        number: po.number,
-        status: po.status,
-        lines: (po.lines ?? []).map((l) => ({
-          itemId: l.itemId,
-          orderedQuantity: BigInt(l.orderedQuantity),
-          unitCostMinorUnits: BigInt(l.unitCostMinorUnits),
-          currency: l.currency,
-        })),
-      })
+      if (po.status === 'APPROVED') {
+        const eventResult = await this.outbox.enqueue(
+          PurchaseOrderApprovedEvent.EVENT_NAME,
+          new PurchaseOrderApprovedEvent(po.id, po.companyId, po.supplierId, new Date()),
+          { client: manager }
+        )
+        if (eventResult.isErr) return err(new ApprovalPublicationError(eventResult.error.message))
+      }
+      return snapshotPurchaseOrder(po)
     })
   }
 
@@ -371,7 +384,7 @@ export class TypeOrmProcurementService extends ProcurementContract {
       const po = await client
         .createQueryBuilder(PurchaseOrderEntity, 'po')
         .leftJoinAndSelect('po.lines', 'lines')
-        .setLock('pessimistic_write')
+        .setLock('pessimistic_write', undefined, ['po'])
         .where('po.id = :id', { id: purchaseOrderId })
         .getOne()
 
@@ -943,7 +956,7 @@ export class TypeOrmProcurementService extends ProcurementContract {
       const invoice = await manager
         .createQueryBuilder(VendorInvoiceEntity, 'invoice')
         .leftJoinAndSelect('invoice.lines', 'lines')
-        .setLock('pessimistic_write')
+        .setLock('pessimistic_write', undefined, ['invoice'])
         .where('invoice.id = :invoiceId', { invoiceId })
         .getOne()
 
@@ -961,7 +974,7 @@ export class TypeOrmProcurementService extends ProcurementContract {
       const po = await manager
         .createQueryBuilder(PurchaseOrderEntity, 'po')
         .leftJoinAndSelect('po.lines', 'lines')
-        .setLock('pessimistic_write')
+        .setLock('pessimistic_write', undefined, ['po'])
         .where('po.id = :id', { id: invoice.purchaseOrderId })
         .getOne()
       if (!po) {

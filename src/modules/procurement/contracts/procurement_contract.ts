@@ -1,7 +1,7 @@
 import type { Result } from '@platform/fp/index.js'
 import type { TransactionOptions } from '@platform/persistence/index.js'
 import type { ScopeForbiddenError } from '@platform/security/index.js'
-import type { ApprovalError } from '@platform/workflow/index.js'
+import type { ApprovalError, ApprovalPipelineSnapshot } from '@platform/workflow/index.js'
 import type {
   AccountsPayablePostingError,
   InvalidPurchaseOrderStateError,
@@ -48,6 +48,7 @@ export type PurchaseOrderSnapshot = Readonly<{
   number: string
   status: 'DRAFT' | 'APPROVED' | 'CLOSED' | 'VOID'
   lines: readonly PurchaseOrderLineInput[]
+  approval: Readonly<ApprovalPipelineSnapshot & { requiredRole: string | null }> | null
 }>
 
 export type PurchaseRequisitionLineInput = Readonly<{
@@ -205,6 +206,8 @@ export type ApproverContext = Readonly<{
   comment?: string
 }>
 
+export type PurchaseOrderApproverContext = ApproverContext & Readonly<{ expectedStepId: string }>
+
 export abstract class ProcurementContract {
   abstract registerSupplier(
     input: RegisterSupplierInput,
@@ -220,9 +223,16 @@ export abstract class ProcurementContract {
     Result<PurchaseOrderSnapshot, ProcurementError | SupplierNotFoundError | ScopeForbiddenError>
   >
 
+  abstract getPurchaseOrder(
+    id: string,
+    options?: TransactionOptions
+  ): Promise<
+    Result<PurchaseOrderSnapshot, PurchaseOrderNotFoundError | ApprovalError | ScopeForbiddenError>
+  >
+
   abstract approvePurchaseOrder(
     id: string,
-    approver?: ApproverContext,
+    approver: PurchaseOrderApproverContext,
     options?: TransactionOptions
   ): Promise<
     Result<

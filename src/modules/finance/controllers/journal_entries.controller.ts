@@ -1,87 +1,75 @@
-import { Body, Controller, Get, Headers, Param, Post, Query, Res } from '@nestjs/common'
-import type { Response } from 'express'
+import { Controller, Headers } from '@nestjs/common'
+import { Implement, implement } from '@orpc/nest'
+import type * as v from 'valibot'
 import { err, ok } from '@platform/fp/index.js'
 import type { Result } from '@platform/fp/index.js'
 import { Money } from '@platform/kernel/index.js'
-import { ResultPresenter } from '@platform/http/index.js'
+import { unwrapResult } from '@platform/http/result_adapter.js'
 import { RequirePermission } from '@platform/security/index.js'
 import { FinanceContract, JournalEntryPersistenceError } from '../contracts/index.js'
 import type { CreateJournalEntryDraftInput, JournalLine } from '../contracts/index.js'
-import { CreateJournalEntryDraftDto } from '../dto/create_journal_entry.dto.js'
-import { ReverseJournalEntryDto } from '../dto/reverse_journal_entry.dto.js'
+import { createJournalEntrySchema, financeApiContract } from '../contracts/finance_api_contract.js'
 
-@Controller('finance')
+@Controller()
 export class JournalEntriesController {
   constructor(private readonly finance: FinanceContract) {}
 
   @RequirePermission('finance.journal.create')
-  @Post('journal-entries')
-  async store(@Body() dto: CreateJournalEntryDraftDto, @Res() res: Response) {
-    const input = JournalEntriesController.toDraftInput(dto)
-    if (input.isErr) {
-      return ResultPresenter.handle(res, input)
-    }
-
-    const result = await this.finance.createDraft(input.value)
-    return ResultPresenter.handle(res, result, { successStatus: 201 })
+  @Implement(financeApiContract.journalEntries.store)
+  store() {
+    return implement(financeApiContract.journalEntries.store).handler(async ({ input }) => {
+      const draft = JournalEntriesController.toDraftInput(input)
+      if (draft.isErr) return unwrapResult(err(draft.error))
+      return unwrapResult(await this.finance.createDraft(draft.value))
+    })
   }
 
   @RequirePermission('finance.voucher.post')
-  @Post('journal-entries/:id/post')
-  async post(
-    @Param('id') id: string,
-    @Headers('x-request-id') requestId: string | undefined,
-    @Res() res: Response
-  ) {
-    const result = await this.finance.postDraft(
-      id,
-      requestId ? { requestId: requestId.trim() } : undefined
+  @Implement(financeApiContract.journalEntries.post)
+  post(@Headers('x-request-id') requestId?: string) {
+    return implement(financeApiContract.journalEntries.post).handler(async ({ input }) =>
+      unwrapResult(
+        await this.finance.postDraft(
+          input.id,
+          requestId ? { requestId: requestId.trim() } : undefined
+        )
+      )
     )
-    return ResultPresenter.handle(res, result)
   }
 
   @RequirePermission('finance.journal.reverse')
-  @Post('journal-entries/:id/reverse')
-  async reverse(
-    @Param('id') id: string,
-    @Body() dto: ReverseJournalEntryDto,
-    @Headers('x-request-id') requestId: string | undefined,
-    @Res() res: Response
-  ) {
-    const result = await this.finance.reverse(
-      id,
-      dto,
-      requestId ? { requestId: requestId.trim() } : undefined
+  @Implement(financeApiContract.journalEntries.reverse)
+  reverse(@Headers('x-request-id') requestId?: string) {
+    return implement(financeApiContract.journalEntries.reverse).handler(async ({ input }) => {
+      const { entryId, ...reversal } = input
+      return unwrapResult(
+        await this.finance.reverse(
+          entryId,
+          reversal,
+          requestId ? { requestId: requestId.trim() } : undefined
+        )
+      )
+    })
+  }
+
+  @RequirePermission('finance.report.read')
+  @Implement(financeApiContract.journalEntries.ledger)
+  ledger() {
+    return implement(financeApiContract.journalEntries.ledger).handler(async ({ input }) =>
+      unwrapResult(await this.finance.ledger(input.companyId, input.from, input.to))
     )
-    return ResultPresenter.handle(res, result, { successStatus: 201 })
   }
 
   @RequirePermission('finance.report.read')
-  @Get('general-ledger')
-  async ledger(
-    @Query('companyId') companyId: string,
-    @Query('from') from: string,
-    @Query('to') to: string,
-    @Res() res: Response
-  ) {
-    const result = await this.finance.ledger(companyId || '', from || '', to || '')
-    return ResultPresenter.handle(res, result)
-  }
-
-  @RequirePermission('finance.report.read')
-  @Get('trial-balance')
-  async trialBalance(
-    @Query('companyId') companyId: string,
-    @Query('from') from: string,
-    @Query('to') to: string,
-    @Res() res: Response
-  ) {
-    const result = await this.finance.trialBalance(companyId || '', from || '', to || '')
-    return ResultPresenter.handle(res, result)
+  @Implement(financeApiContract.journalEntries.trialBalance)
+  trialBalance() {
+    return implement(financeApiContract.journalEntries.trialBalance).handler(async ({ input }) =>
+      unwrapResult(await this.finance.trialBalance(input.companyId, input.from, input.to))
+    )
   }
 
   private static toDraftInput(
-    payload: CreateJournalEntryDraftDto
+    payload: v.InferOutput<typeof createJournalEntrySchema>
   ): Result<CreateJournalEntryDraftInput, JournalEntryPersistenceError> {
     const lines: JournalLine[] = []
     for (const line of payload.lines) {
