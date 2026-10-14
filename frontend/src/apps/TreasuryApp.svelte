@@ -5,21 +5,172 @@
   type Payment = Awaited<ReturnType<Api['treasury']['createPayment']>>
   const session = readAuthSession()
   let companyId = $state(session?.user.organizationUnitIds[0] ?? '')
-  let accountId = $state(''); let accountNumber = $state(''); let bankCode = $state(''); let bankName = $state(''); let accountName = $state(''); let glAccountId = $state(''); let initialBalanceMinorUnits = $state('0'); let currency = $state('TWD')
-  let paymentId = $state(''); let paymentNumber = $state(''); let beneficiaryId = $state(''); let amountMinorUnits = $state('0'); let payment = $state<Payment | null>(null)
-  let accounts = $state<BankAccount[]>([]); let message = $state<string | null>(null); let busy = $state(false)
+  let accountId = $state('')
+  let accountNumber = $state('')
+  let bankCode = $state('')
+  let bankName = $state('')
+  let accountName = $state('')
+  let glAccountId = $state('')
+  let initialBalanceMinorUnits = $state('0')
+  let currency = $state('TWD')
+  let paymentId = $state('')
+  let paymentNumber = $state('')
+  let beneficiaryId = $state('')
+  let amountMinorUnits = $state('0')
+  let payment = $state<Payment | null>(null)
+  let accounts = $state<BankAccount[]>([])
+  let message = $state<string | null>(null)
+  let busy = $state(false)
 
-  function errorMessage(error: unknown) { return error instanceof Error ? error.message : '操作失敗' }
-  async function run(action: () => Promise<void>) { busy = true; message = null; try { await action() } catch (error) { message = errorMessage(error) } finally { busy = false } }
-  async function createAccount() { await run(async () => { accountId = accountId || `bank-${crypto.randomUUID()}`; const account = await api.treasury.registerBankAccount({ id: accountId, companyId, accountNumber, bankCode, bankName, accountName, currency, glAccountId, initialBalanceMinorUnits }, { context: { organizationUnitId: companyId } }); accountId = account.id; accounts = [account, ...accounts.filter((item) => item.id !== account.id)]; message = `銀行帳戶 ${account.accountNumber} 已建立。` }) }
-  async function loadAccounts() { await run(async () => { accounts = await api.treasury.listBankAccounts({ companyId }, { context: { organizationUnitId: companyId } }); message = '銀行帳戶已載入。' }) }
-  async function createPayment() { await run(async () => { paymentId = paymentId || `payment-${crypto.randomUUID()}`; paymentNumber = paymentNumber || `PAY-${Date.now()}`; const created = await api.treasury.createPayment({ id: paymentId, companyId, bankAccountId: accountId, paymentNumber, paymentDate: new Date().toISOString().slice(0, 10), beneficiaryType: 'OTHER', beneficiaryId, currency, amountMinorUnits }, { context: { organizationUnitId: companyId } }); payment = created; message = `付款單 ${created.paymentNumber} 已建立。` }) }
-  async function postPayment() { const current = payment; if (!current) return; await run(async () => { const posted = await api.treasury.postPayment({ id: current.id }, { context: { organizationUnitId: current.companyId } }); payment = posted; message = `付款單 ${posted.paymentNumber} 已過帳。` }) }
+  function errorMessage(error: unknown) {
+    return error instanceof Error ? error.message : '操作失敗'
+  }
+  async function run(action: () => Promise<void>) {
+    busy = true
+    message = null
+    try {
+      await action()
+    } catch (error) {
+      message = errorMessage(error)
+    } finally {
+      busy = false
+    }
+  }
+  async function createAccount() {
+    await run(async () => {
+      accountId = accountId || `bank-${crypto.randomUUID()}`
+      const account = await api.treasury.registerBankAccount(
+        {
+          id: accountId,
+          companyId,
+          accountNumber,
+          bankCode,
+          bankName,
+          accountName,
+          currency,
+          glAccountId,
+          initialBalanceMinorUnits,
+        },
+        { context: { organizationUnitId: companyId } }
+      )
+      accountId = account.id
+      accounts = [account, ...accounts.filter((item) => item.id !== account.id)]
+      message = `銀行帳戶 ${account.accountNumber} 已建立。`
+    })
+  }
+  async function loadAccounts() {
+    await run(async () => {
+      accounts = await api.treasury.listBankAccounts(
+        { companyId },
+        { context: { organizationUnitId: companyId } }
+      )
+      message = '銀行帳戶已載入。'
+    })
+  }
+  async function createPayment() {
+    await run(async () => {
+      paymentId = paymentId || `payment-${crypto.randomUUID()}`
+      paymentNumber = paymentNumber || `PAY-${Date.now()}`
+      const created = await api.treasury.createPayment(
+        {
+          id: paymentId,
+          companyId,
+          bankAccountId: accountId,
+          paymentNumber,
+          paymentDate: new Date().toISOString().slice(0, 10),
+          beneficiaryType: 'OTHER',
+          beneficiaryId,
+          currency,
+          amountMinorUnits,
+        },
+        { context: { organizationUnitId: companyId } }
+      )
+      payment = created
+      message = `付款單 ${created.paymentNumber} 已建立。`
+    })
+  }
+  async function postPayment() {
+    const current = payment
+    if (!current) return
+    await run(async () => {
+      const posted = await api.treasury.postPayment(
+        { id: current.id },
+        { context: { organizationUnitId: current.companyId } }
+      )
+      payment = posted
+      message = `付款單 ${posted.paymentNumber} 已過帳。`
+    })
+  }
 </script>
 
 <div class="erp-page">
-  <header class="erp-page-header"><span class="erp-eyebrow">出納資金與銀行對帳 (Treasury)</span><h2 class="erp-page-title">銀行帳戶與付款</h2><p class="erp-page-hint">帳面餘額與付款狀態由 Treasury API 提供。</p></header>
-  {#if message}<div class="notification is-info is-light py-3" role="status">{message}</div>{/if}
-  <section class="erp-panel"><h3 class="erp-panel-title">銀行帳戶</h3><div class="erp-form-grid"><label>公司 ID<input class="input" bind:value={companyId} /></label><label>帳戶 ID<input class="input" bind:value={accountId} placeholder="留白自動產生" /></label><label>帳號<input class="input" bind:value={accountNumber} /></label><label>銀行代碼<input class="input" bind:value={bankCode} /></label><label>銀行名稱<input class="input" bind:value={bankName} /></label><label>戶名<input class="input" bind:value={accountName} /></label><label>GL 科目 ID<input class="input" bind:value={glAccountId} /></label><label>初始餘額<input class="input" bind:value={initialBalanceMinorUnits} inputmode="numeric" /></label><label>幣別<input class="input" bind:value={currency} maxlength="3" /></label><button class="button is-primary" onclick={createAccount} disabled={busy}>建立帳戶</button><button class="button is-light" onclick={loadAccounts} disabled={busy}>載入帳戶</button></div>{#if accounts.length}<div class="erp-list">{#each accounts as account}<div class="erp-list-item"><strong>{account.bankName}</strong><span>{account.accountNumber}</span><span>NT$ {account.currentBalanceMinorUnits}</span><span>{account.isActive ? 'ACTIVE' : 'INACTIVE'}</span></div>{/each}</div>{/if}</section>
-  <section class="erp-panel"><h3 class="erp-panel-title">付款單</h3><div class="erp-form-grid"><label>付款 ID<input class="input" bind:value={paymentId} placeholder="留白自動產生" /></label><label>付款號碼<input class="input" bind:value={paymentNumber} placeholder="留白自動產生" /></label><label>銀行帳戶 ID<input class="input" bind:value={accountId} /></label><label>受款人 ID<input class="input" bind:value={beneficiaryId} /></label><label>金額（最小單位）<input class="input" bind:value={amountMinorUnits} inputmode="numeric" /></label><button class="button is-primary" onclick={createPayment} disabled={busy}>建立付款</button></div>{#if payment}<div class="erp-result"><pre>{JSON.stringify(payment, null, 2)}</pre><button class="button is-link" onclick={postPayment} disabled={busy || payment.status !== 'DRAFT'}>過帳</button></div>{/if}</section>
+  <header class="erp-page-header">
+    <span class="erp-eyebrow">出納資金與銀行對帳 (Treasury)</span>
+    <h2 class="erp-page-title">銀行帳戶與付款</h2>
+    <p class="erp-page-hint">帳面餘額與付款狀態由 Treasury API 提供。</p>
+  </header>
+  {#if message}
+    <div class="notification is-info is-light py-3" role="status">{message}</div>
+  {/if}
+  <section class="erp-panel">
+    <h3 class="erp-panel-title">銀行帳戶</h3>
+    <div class="erp-form-grid">
+      <label>公司 ID<input class="input" bind:value={companyId}></label
+      ><label>帳戶 ID<input class="input" bind:value={accountId} placeholder="留白自動產生"></label
+      ><label>帳號<input class="input" bind:value={accountNumber}></label
+      ><label>銀行代碼<input class="input" bind:value={bankCode}></label
+      ><label>銀行名稱<input class="input" bind:value={bankName}></label
+      ><label>戶名<input class="input" bind:value={accountName}></label
+      ><label>GL 科目 ID<input class="input" bind:value={glAccountId}></label
+      ><label
+        >初始餘額<input
+          class="input"
+          bind:value={initialBalanceMinorUnits}
+          inputmode="numeric"
+        ></label
+      ><label>幣別<input class="input" bind:value={currency} maxlength="3"></label
+      ><button class="button is-primary" onclick={createAccount} disabled={busy}>建立帳戶</button
+      ><button class="button is-light" onclick={loadAccounts} disabled={busy}>載入帳戶</button>
+    </div>
+    {#if accounts.length}
+      <div class="erp-list">
+        {#each accounts as account}
+          <div class="erp-list-item">
+            <strong>{account.bankName}</strong><span>{account.accountNumber}</span
+            ><span>NT$ {account.currentBalanceMinorUnits}</span
+            ><span>{account.isActive ? 'ACTIVE' : 'INACTIVE'}</span>
+          </div>
+        {/each}
+      </div>
+    {/if}
+  </section>
+  <section class="erp-panel">
+    <h3 class="erp-panel-title">付款單</h3>
+    <div class="erp-form-grid">
+      <label>付款 ID<input class="input" bind:value={paymentId} placeholder="留白自動產生"></label
+      ><label
+        >付款號碼<input class="input" bind:value={paymentNumber} placeholder="留白自動產生"></label
+      ><label>銀行帳戶 ID<input class="input" bind:value={accountId}></label
+      ><label>受款人 ID<input class="input" bind:value={beneficiaryId}></label
+      ><label
+        >金額（最小單位）<input
+          class="input"
+          bind:value={amountMinorUnits}
+          inputmode="numeric"
+        ></label
+      ><button class="button is-primary" onclick={createPayment} disabled={busy}>建立付款</button>
+    </div>
+    {#if payment}
+      <div class="erp-result">
+        <pre>{JSON.stringify(payment, null, 2)}</pre>
+        <button
+          class="button is-link"
+          onclick={postPayment}
+          disabled={busy || payment.status !== 'DRAFT'}
+        >
+          過帳
+        </button>
+      </div>
+    {/if}
+  </section>
 </div>

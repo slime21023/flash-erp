@@ -26,7 +26,13 @@
     busy = true
     message = null
     try {
-      unit = await api.organization.units.register({ id, code, name, kind, parentId: parentId.trim() || null })
+      unit = await api.organization.units.register({
+        id,
+        code,
+        name,
+        kind,
+        parentId: parentId.trim() || null,
+      })
       lookupId = unit.id
       message = `組織單位 ${unit.code} 已建立。`
     } catch (error) {
@@ -62,23 +68,39 @@
     <p class="erp-page-hint">目前頁面直接讀寫 organization API，不再使用示範樹狀資料。</p>
   </header>
 
-  {#if message}<div class="notification is-info is-light py-3" role="status">{message}</div>{/if}
+  {#if message}
+    <div class="notification is-info is-light py-3" role="status">{message}</div>
+  {/if}
 
   <section class="erp-panel">
     <h3 class="erp-panel-title">建立組織單位</h3>
     <div class="erp-form-grid">
-      <label>ID<input class="input" bind:value={id} placeholder="org-..." /></label>
-      <label>代碼<input class="input" bind:value={code} placeholder="HQ" /></label>
-      <label>名稱<input class="input" bind:value={name} placeholder="Headquarters" /></label>
-      <label>類型<div class="select is-fullwidth"><select bind:value={kind}><option value="COMPANY">COMPANY</option><option value="PLANT">PLANT</option><option value="WAREHOUSE">WAREHOUSE</option></select></div></label>
-      <label>父節點 ID<input class="input" bind:value={parentId} placeholder="可留白" /></label>
+      <label>ID<input class="input" bind:value={id} placeholder="org-..."></label>
+      <label>代碼<input class="input" bind:value={code} placeholder="HQ"></label>
+      <label>名稱<input class="input" bind:value={name} placeholder="Headquarters"></label>
+      <label
+        >類型
+        <div class="select is-fullwidth">
+          <select bind:value={kind}>
+            <option value="COMPANY">COMPANY</option>
+            <option value="PLANT">PLANT</option>
+            <option value="WAREHOUSE">WAREHOUSE</option>
+          </select>
+        </div></label
+      >
+      <label>父節點 ID<input class="input" bind:value={parentId} placeholder="可留白"></label>
       <button class="button is-primary" onclick={register} disabled={busy}>建立</button>
     </div>
   </section>
 
   <section class="erp-panel">
-    <div class="is-flex is-align-items-center is-justify-content-space-between" style="gap: 1rem"><h3 class="erp-panel-title">查詢單位</h3><button class="button is-light" onclick={lookup} disabled={busy}>載入</button></div>
-    <input class="input" bind:value={lookupId} placeholder="organization unit ID" />
-    {#if unit}<div class="erp-result"><pre>{JSON.stringify(unit, null, 2)}</pre></div>{/if}
+    <div class="is-flex is-align-items-center is-justify-content-space-between" style="gap: 1rem">
+      <h3 class="erp-panel-title">查詢單位</h3>
+      <button class="button is-light" onclick={lookup} disabled={busy}>載入</button>
+    </div>
+    <input class="input" bind:value={lookupId} placeholder="organization unit ID">
+    {#if unit}
+      <div class="erp-result"><pre>{JSON.stringify(unit, null, 2)}</pre></div>
+    {/if}
   </section>
 </div>

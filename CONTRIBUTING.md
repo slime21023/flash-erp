@@ -73,6 +73,23 @@ npm run start:dev
 npm run dev -w frontend
 ```
 
+### Formatting & Linting
+
+Biome 2.5.15 formats JavaScript, TypeScript, JSON/JSONC, CSS, HTML, and Svelte. Biome lints supported files except `.svelte`; `svelte-check` owns Svelte type and component diagnostics. Run these commands from the repository root:
+
+```bash
+npm run format       # Apply formatting
+npm run lint         # Biome lint plus Svelte/frontend checks
+npm run format:check # Check formatting without changing files
+npm run check:code   # Biome formatting/lint plus Svelte/frontend checks
+```
+
+Formatting uses two spaces, single JavaScript quotes, a 100-column target, and semicolons only when needed. Generated output, dependency directories, lockfiles, and SVG assets are excluded. Markdown and YAML are not currently supported by Biome and remain manually maintained.
+
+The Biome lint configuration explicitly migrates the previous rule policy rather than enabling a new blanket preset. Explicit `any`, unused variables, and console output remain allowed in Biome; TypeScript compiler-covered rules stay delegated to `npm run typecheck` and the frontend checks. The migration does not provide exact replacements for ESLint's `no-new-symbol`, TypeScript-specific `no-unused-expressions`, or `triple-slash-reference` rules.
+
+NestJS parameter decorators are enabled in the parser. Biome's full Svelte parser and formatter remain experimental upstream, but Biome lint is disabled for `.svelte` files. Both `npm run lint` and `npm run check:code` invoke the existing frontend `check` script (`svelte-check` followed by the Vite-config TypeScript check); `npm run check -w frontend` is also available independently. CI runs these frontend checks through the lint step rather than repeating them during the build. Import-organizing assists are disabled so formatting does not reorder imports. Editor users can select the `biomejs.biome` extension as their formatter while retaining the Svelte extension for language support.
+
 ---
 
 ## 4. Scaffolding a New Module
@@ -95,9 +112,8 @@ Before submitting your PR, ensure all checks pass cleanly:
 npm run typecheck            # TypeScript strict compilation
 npm run architecture:check   # Modular boundary guard
 npm test                     # Unit & Property-Based tests (Vitest)
-npm run lint                 # ESLint check
-npm run format:check         # Prettier style check
+npm run lint                 # Biome lint + Svelte/frontend checks
+npm run format:check         # Biome formatting check
 npm run build             # Backend build
-npm run check -w frontend
 npm run build -w frontend # Frontend build
 ```

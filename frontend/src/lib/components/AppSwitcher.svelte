@@ -29,7 +29,8 @@
   $effect(() => {
     if (!isOpen) return
 
-    const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null
+    const previousFocus =
+      document.activeElement instanceof HTMLElement ? document.activeElement : null
     void tick().then(() => closeButton?.focus())
 
     return () => previousFocus?.focus()
@@ -150,7 +151,9 @@
       <header class="modal-card-head">
         <div>
           <h2 id="app-switcher-title" class="modal-card-title">應用程式啟動器</h2>
-          <p class="is-size-7 has-text-grey-dark">點選進入各業務領域模組，所有領域共享統一單體模組架構</p>
+          <p class="is-size-7 has-text-grey-dark">
+            點選進入各業務領域模組，所有領域共享統一單體模組架構
+          </p>
         </div>
         <button bind:this={closeButton} class="delete" aria-label="關閉" onclick={onClose}></button>
       </header>

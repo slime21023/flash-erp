@@ -1,7 +1,7 @@
-@import 'bulma/css/bulma.min.css';
+@import "bulma/css/bulma.min.css";
 
 :root {
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   color-scheme: light;
   --bulma-primary-h: 243;
   --bulma-primary-s: 75%;

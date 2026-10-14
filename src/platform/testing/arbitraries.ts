@@ -111,9 +111,10 @@ export function resultArbitrary<T, E>(
 ): fc.Arbitrary<ResultType<T, E>> {
   return fc
     .boolean()
-    .chain((isSuccess): fc.Arbitrary<ResultType<T, E>> =>
-      isSuccess
-        ? valueArb.map((val): ResultType<T, E> => ok(val))
-        : errorArb.map((errVal): ResultType<T, E> => err(errVal))
+    .chain(
+      (isSuccess): fc.Arbitrary<ResultType<T, E>> =>
+        isSuccess
+          ? valueArb.map((val): ResultType<T, E> => ok(val))
+          : errorArb.map((errVal): ResultType<T, E> => err(errVal))
     )
 }

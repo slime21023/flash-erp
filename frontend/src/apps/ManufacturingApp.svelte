@@ -5,26 +5,246 @@
   type WorkOrder = Awaited<ReturnType<Api['manufacturing']['createWorkOrder']>>
   const session = readAuthSession()
   let companyId = $state(session?.user.organizationUnitIds[0] ?? '')
-  let bomId = $state(''); let bomCode = $state(''); let bomName = $state(''); let parentItemId = $state(''); let componentItemId = $state(''); let quantityPerBase = $state('1'); let baseQuantity = $state('1'); let scrapPercentageBasisPoints = $state('0')
-  let workOrderId = $state(''); let workOrderNumber = $state(''); let outputWarehouseId = $state(''); let rawMaterialWarehouseId = $state(''); let targetQuantity = $state('1')
-  let issueComponentItemId = $state(''); let issueQuantity = $state('1'); let completedQuantity = $state('1')
-  let overheadAmountMinorUnits = $state('0'); let overheadAccount = $state(''); let allocationBase = $state<'COMPLETED_QUANTITY' | 'DIRECT_MATERIAL_COST'>('COMPLETED_QUANTITY')
-  let bom = $state<Bom | null>(null); let workOrder = $state<WorkOrder | null>(null); let message = $state<string | null>(null); let busy = $state(false)
+  let bomId = $state('')
+  let bomCode = $state('')
+  let bomName = $state('')
+  let parentItemId = $state('')
+  let componentItemId = $state('')
+  let quantityPerBase = $state('1')
+  let baseQuantity = $state('1')
+  let scrapPercentageBasisPoints = $state('0')
+  let workOrderId = $state('')
+  let workOrderNumber = $state('')
+  let outputWarehouseId = $state('')
+  let rawMaterialWarehouseId = $state('')
+  let targetQuantity = $state('1')
+  let issueComponentItemId = $state('')
+  let issueQuantity = $state('1')
+  let completedQuantity = $state('1')
+  let overheadAmountMinorUnits = $state('0')
+  let overheadAccount = $state('')
+  let allocationBase = $state<'COMPLETED_QUANTITY' | 'DIRECT_MATERIAL_COST'>('COMPLETED_QUANTITY')
+  let bom = $state<Bom | null>(null)
+  let workOrder = $state<WorkOrder | null>(null)
+  let message = $state<string | null>(null)
+  let busy = $state(false)
 
-  function errorMessage(error: unknown) { return error instanceof Error ? error.message : '操作失敗' }
-  async function run(action: () => Promise<void>) { busy = true; message = null; try { await action() } catch (error) { message = errorMessage(error) } finally { busy = false } }
-  async function registerBom() { await run(async () => { bomId = bomId || `bom-${crypto.randomUUID()}`; bom = await api.manufacturing.registerBom({ id: bomId, companyId, code: bomCode, name: bomName, parentItemId, baseQuantity, lines: [{ componentItemId, quantityPerBase, scrapPercentageBasisPoints: Number(scrapPercentageBasisPoints) }] }, { context: { organizationUnitId: companyId } }); message = `BOM ${bom.code} 已建立。` }) }
-  async function createWorkOrder() { await run(async () => { workOrderId = workOrderId || `wo-${crypto.randomUUID()}`; workOrderNumber = workOrderNumber || `WO-${Date.now()}`; const created = await api.manufacturing.createWorkOrder({ id: workOrderId, companyId, workOrderNumber, bomId, outputWarehouseId, rawMaterialWarehouseId, targetQuantity }, { context: { organizationUnitId: companyId } }); workOrder = created; issueComponentItemId = created.lines[0]?.componentItemId ?? issueComponentItemId; message = `工單 ${created.workOrderNumber} 已建立。` }) }
-  async function releaseWorkOrder() { const current = workOrder; if (!current) return; await run(async () => { const updated = await api.manufacturing.releaseWorkOrder({ id: current.id }, { context: { organizationUnitId: current.companyId } }); workOrder = updated; message = `工單 ${updated.workOrderNumber} 已下達。` }) }
-  async function issueMaterials() { const current = workOrder; if (!current) return; await run(async () => { workOrder = await api.manufacturing.issueMaterials({ id: current.id, issueDate: new Date().toISOString().slice(0, 10), lines: [{ componentItemId: issueComponentItemId, quantity: issueQuantity }] }, { context: { organizationUnitId: current.companyId } }); message = '原料已發料。' }) }
-  async function completeWorkOrder() { const current = workOrder; if (!current) return; await run(async () => { workOrder = await api.manufacturing.completeWorkOrder({ id: current.id, completedQuantity, completionDate: new Date().toISOString().slice(0, 10) }, { context: { organizationUnitId: current.companyId } }); message = '工單已完工。' }) }
-  async function allocateOverhead() { await run(async () => { await api.manufacturing.allocateOverhead({ companyId, overheadAccount: overheadAccount || undefined, totalPoolAmountMinorUnits: overheadAmountMinorUnits, accountingDate: new Date().toISOString().slice(0, 10), allocationBase, workOrderIds: workOrder ? [workOrder.id] : [] }, { context: { organizationUnitId: companyId } }); message = '製費已分攤。' }) }
+  function errorMessage(error: unknown) {
+    return error instanceof Error ? error.message : '操作失敗'
+  }
+  async function run(action: () => Promise<void>) {
+    busy = true
+    message = null
+    try {
+      await action()
+    } catch (error) {
+      message = errorMessage(error)
+    } finally {
+      busy = false
+    }
+  }
+  async function registerBom() {
+    await run(async () => {
+      bomId = bomId || `bom-${crypto.randomUUID()}`
+      bom = await api.manufacturing.registerBom(
+        {
+          id: bomId,
+          companyId,
+          code: bomCode,
+          name: bomName,
+          parentItemId,
+          baseQuantity,
+          lines: [
+            {
+              componentItemId,
+              quantityPerBase,
+              scrapPercentageBasisPoints: Number(scrapPercentageBasisPoints),
+            },
+          ],
+        },
+        { context: { organizationUnitId: companyId } }
+      )
+      message = `BOM ${bom.code} 已建立。`
+    })
+  }
+  async function createWorkOrder() {
+    await run(async () => {
+      workOrderId = workOrderId || `wo-${crypto.randomUUID()}`
+      workOrderNumber = workOrderNumber || `WO-${Date.now()}`
+      const created = await api.manufacturing.createWorkOrder(
+        {
+          id: workOrderId,
+          companyId,
+          workOrderNumber,
+          bomId,
+          outputWarehouseId,
+          rawMaterialWarehouseId,
+          targetQuantity,
+        },
+        { context: { organizationUnitId: companyId } }
+      )
+      workOrder = created
+      issueComponentItemId = created.lines[0]?.componentItemId ?? issueComponentItemId
+      message = `工單 ${created.workOrderNumber} 已建立。`
+    })
+  }
+  async function releaseWorkOrder() {
+    const current = workOrder
+    if (!current) return
+    await run(async () => {
+      const updated = await api.manufacturing.releaseWorkOrder(
+        { id: current.id },
+        { context: { organizationUnitId: current.companyId } }
+      )
+      workOrder = updated
+      message = `工單 ${updated.workOrderNumber} 已下達。`
+    })
+  }
+  async function issueMaterials() {
+    const current = workOrder
+    if (!current) return
+    await run(async () => {
+      workOrder = await api.manufacturing.issueMaterials(
+        {
+          id: current.id,
+          issueDate: new Date().toISOString().slice(0, 10),
+          lines: [{ componentItemId: issueComponentItemId, quantity: issueQuantity }],
+        },
+        { context: { organizationUnitId: current.companyId } }
+      )
+      message = '原料已發料。'
+    })
+  }
+  async function completeWorkOrder() {
+    const current = workOrder
+    if (!current) return
+    await run(async () => {
+      workOrder = await api.manufacturing.completeWorkOrder(
+        {
+          id: current.id,
+          completedQuantity,
+          completionDate: new Date().toISOString().slice(0, 10),
+        },
+        { context: { organizationUnitId: current.companyId } }
+      )
+      message = '工單已完工。'
+    })
+  }
+  async function allocateOverhead() {
+    await run(async () => {
+      await api.manufacturing.allocateOverhead(
+        {
+          companyId,
+          overheadAccount: overheadAccount || undefined,
+          totalPoolAmountMinorUnits: overheadAmountMinorUnits,
+          accountingDate: new Date().toISOString().slice(0, 10),
+          allocationBase,
+          workOrderIds: workOrder ? [workOrder.id] : [],
+        },
+        { context: { organizationUnitId: companyId } }
+      )
+      message = '製費已分攤。'
+    })
+  }
 </script>
 
 <div class="erp-page">
-  <header class="erp-page-header"><span class="erp-eyebrow">生產製造與成本分攤 (Manufacturing)</span><h2 class="erp-page-title">BOM、工單與製費</h2><p class="erp-page-hint">工單狀態與成本由 Manufacturing API 計算。</p></header>
-  {#if message}<div class="notification is-danger is-light py-3" role="status">{message}</div>{/if}
-  <section class="erp-panel"><h3 class="erp-panel-title">BOM</h3><div class="erp-form-grid"><label>BOM ID<input class="input" bind:value={bomId} placeholder="留白自動產生" /></label><label>公司 ID<input class="input" bind:value={companyId} /></label><label>代碼<input class="input" bind:value={bomCode} /></label><label>名稱<input class="input" bind:value={bomName} /></label><label>成品料品 ID<input class="input" bind:value={parentItemId} /></label><label>元件料品 ID<input class="input" bind:value={componentItemId} /></label><label>基準數量<input class="input" bind:value={baseQuantity} /></label><label>單位用量<input class="input" bind:value={quantityPerBase} /></label><label>損耗 bps<input class="input" bind:value={scrapPercentageBasisPoints} /></label><button class="button is-primary" onclick={registerBom} disabled={busy}>建立 BOM</button></div>{#if bom}<div class="erp-result"><pre>{JSON.stringify(bom, null, 2)}</pre></div>{/if}</section>
-  <section class="erp-panel"><h3 class="erp-panel-title">工單</h3><div class="erp-form-grid"><label>工單 ID<input class="input" bind:value={workOrderId} placeholder="留白自動產生" /></label><label>工單號碼<input class="input" bind:value={workOrderNumber} placeholder="留白自動產生" /></label><label>BOM ID<input class="input" bind:value={bomId} /></label><label>成品倉庫 ID<input class="input" bind:value={outputWarehouseId} /></label><label>原料倉庫 ID<input class="input" bind:value={rawMaterialWarehouseId} /></label><label>目標數量<input class="input" bind:value={targetQuantity} /></label><button class="button is-primary" onclick={createWorkOrder} disabled={busy}>建立工單</button></div>{#if workOrder}<div class="erp-result"><strong>{workOrder.workOrderNumber}</strong><span>{workOrder.status}</span><span>成品：{workOrder.outputItemId}</span><button class="button is-link" onclick={releaseWorkOrder} disabled={busy || workOrder.status !== 'DRAFT'}>下達</button></div><div class="erp-form-grid"><label>元件料品 ID<input class="input" bind:value={issueComponentItemId} /></label><label>發料數量<input class="input" bind:value={issueQuantity} /></label><button class="button is-primary" onclick={issueMaterials} disabled={busy || workOrder.status !== 'RELEASED'}>發料</button><label>完工數量<input class="input" bind:value={completedQuantity} /></label><button class="button is-primary" onclick={completeWorkOrder} disabled={busy || workOrder.status !== 'IN_PROGRESS'}>完工</button></div><div class="erp-result"><pre>{JSON.stringify(workOrder, null, 2)}</pre></div>{/if}</section>
-  <section class="erp-panel"><h3 class="erp-panel-title">製費分攤</h3><div class="erp-form-grid"><label>製費金額<input class="input" bind:value={overheadAmountMinorUnits} inputmode="numeric" /></label><label>製費科目 ID<input class="input" bind:value={overheadAccount} /></label><label>分攤基礎<div class="select is-fullwidth"><select bind:value={allocationBase}><option value="COMPLETED_QUANTITY">COMPLETED_QUANTITY</option><option value="DIRECT_MATERIAL_COST">DIRECT_MATERIAL_COST</option></select></div></label><button class="button is-primary" onclick={allocateOverhead} disabled={busy || !workOrder}>分攤</button></div></section>
+  <header class="erp-page-header">
+    <span class="erp-eyebrow">生產製造與成本分攤 (Manufacturing)</span>
+    <h2 class="erp-page-title">BOM、工單與製費</h2>
+    <p class="erp-page-hint">工單狀態與成本由 Manufacturing API 計算。</p>
+  </header>
+  {#if message}
+    <div class="notification is-danger is-light py-3" role="status">{message}</div>
+  {/if}
+  <section class="erp-panel">
+    <h3 class="erp-panel-title">BOM</h3>
+    <div class="erp-form-grid">
+      <label>BOM ID<input class="input" bind:value={bomId} placeholder="留白自動產生"></label
+      ><label>公司 ID<input class="input" bind:value={companyId}></label
+      ><label>代碼<input class="input" bind:value={bomCode}></label
+      ><label>名稱<input class="input" bind:value={bomName}></label
+      ><label>成品料品 ID<input class="input" bind:value={parentItemId}></label
+      ><label>元件料品 ID<input class="input" bind:value={componentItemId}></label
+      ><label>基準數量<input class="input" bind:value={baseQuantity}></label
+      ><label>單位用量<input class="input" bind:value={quantityPerBase}></label
+      ><label>損耗 bps<input class="input" bind:value={scrapPercentageBasisPoints}></label
+      ><button class="button is-primary" onclick={registerBom} disabled={busy}>建立 BOM</button>
+    </div>
+    {#if bom}
+      <div class="erp-result"><pre>{JSON.stringify(bom, null, 2)}</pre></div>
+    {/if}
+  </section>
+  <section class="erp-panel">
+    <h3 class="erp-panel-title">工單</h3>
+    <div class="erp-form-grid">
+      <label>工單 ID<input class="input" bind:value={workOrderId} placeholder="留白自動產生"></label
+      ><label
+        >工單號碼<input
+          class="input"
+          bind:value={workOrderNumber}
+          placeholder="留白自動產生"
+        ></label
+      ><label>BOM ID<input class="input" bind:value={bomId}></label
+      ><label>成品倉庫 ID<input class="input" bind:value={outputWarehouseId}></label
+      ><label>原料倉庫 ID<input class="input" bind:value={rawMaterialWarehouseId}></label
+      ><label>目標數量<input class="input" bind:value={targetQuantity}></label
+      ><button class="button is-primary" onclick={createWorkOrder} disabled={busy}>建立工單</button>
+    </div>
+    {#if workOrder}
+      <div class="erp-result">
+        <strong>{workOrder.workOrderNumber}</strong><span>{workOrder.status}</span
+        ><span>成品：{workOrder.outputItemId}</span
+        ><button
+          class="button is-link"
+          onclick={releaseWorkOrder}
+          disabled={busy || workOrder.status !== 'DRAFT'}
+        >
+          下達
+        </button>
+      </div>
+      <div class="erp-form-grid">
+        <label>元件料品 ID<input class="input" bind:value={issueComponentItemId}></label
+        ><label>發料數量<input class="input" bind:value={issueQuantity}></label
+        ><button
+          class="button is-primary"
+          onclick={issueMaterials}
+          disabled={busy || workOrder.status !== 'RELEASED'}
+        >
+          發料
+        </button><label>完工數量<input class="input" bind:value={completedQuantity}></label
+        ><button
+          class="button is-primary"
+          onclick={completeWorkOrder}
+          disabled={busy || workOrder.status !== 'IN_PROGRESS'}
+        >
+          完工
+        </button>
+      </div>
+      <div class="erp-result"><pre>{JSON.stringify(workOrder, null, 2)}</pre></div>
+    {/if}
+  </section>
+  <section class="erp-panel">
+    <h3 class="erp-panel-title">製費分攤</h3>
+    <div class="erp-form-grid">
+      <label
+        >製費金額<input
+          class="input"
+          bind:value={overheadAmountMinorUnits}
+          inputmode="numeric"
+        ></label
+      ><label>製費科目 ID<input class="input" bind:value={overheadAccount}></label
+      ><label
+        >分攤基礎
+        <div class="select is-fullwidth">
+          <select bind:value={allocationBase}>
+            <option value="COMPLETED_QUANTITY">COMPLETED_QUANTITY</option>
+            <option value="DIRECT_MATERIAL_COST">DIRECT_MATERIAL_COST</option>
+          </select>
+        </div></label
+      ><button class="button is-primary" onclick={allocateOverhead} disabled={busy || !workOrder}>
+        分攤
+      </button>
+    </div>
+  </section>
 </div>

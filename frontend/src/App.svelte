@@ -10,13 +10,7 @@
   import FinanceApp from './apps/FinanceApp.svelte'
   import TreasuryApp from './apps/TreasuryApp.svelte'
   import OrganizationApp from './apps/OrganizationApp.svelte'
-  import {
-    login,
-    logout,
-    readAuthSession,
-    restoreSession,
-    type AuthSession,
-  } from './lib/api.js'
+  import { login, logout, readAuthSession, restoreSession, type AuthSession } from './lib/api.js'
   import type { ActiveAppId } from './lib/types.js'
 
   let session = $state<AuthSession | null>(readAuthSession())
@@ -82,10 +76,7 @@
 
 {#if !session}
   <main class="hero is-fullheight is-light">
-    <form
-      onsubmit={handleLogin}
-      class="hero-body is-justify-content-center is-align-items-center"
-    >
+    <form onsubmit={handleLogin} class="hero-body is-justify-content-center is-align-items-center">
       <div class="box" style="width: min(100%, 28rem)">
         <div class="mb-5">
           <p class="erp-eyebrow">FlashERP</p>
@@ -102,7 +93,7 @@
               autocomplete="username"
               required
               class="input"
-            />
+            >
           </div>
         </div>
 
@@ -116,7 +107,7 @@
               autocomplete="current-password"
               required
               class="input"
-            />
+            >
           </div>
         </div>
 

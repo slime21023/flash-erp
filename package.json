@@ -21,9 +21,10 @@
     "test:integration": "vitest run --config vitest.integration.config.ts",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
-    "lint": "eslint .",
-    "format": "prettier --write .",
-    "format:check": "prettier --check .",
+    "lint": "biome lint . && npm run check -w frontend",
+    "format": "biome format --write .",
+    "format:check": "biome format .",
+    "check:code": "biome check . && npm run check -w frontend",
     "architecture:check": "node --experimental-strip-types scripts/check_module_boundaries.ts",
     "make:module": "tsx scripts/make_module.ts",
     "seed:admin": "tsx scripts/seed_admin.ts"
@@ -55,18 +56,14 @@
     "valibot": "1.5.0"
   },
   "devDependencies": {
+    "@biomejs/biome": "2.5.15",
     "@types/express": "^5.0.0",
     "@types/luxon": "^3.7.5",
     "@types/node": "^24.0.0",
     "@types/swagger-ui-express": "^4.1.8",
-    "@typescript-eslint/eslint-plugin": "^8.24.0",
-    "@typescript-eslint/parser": "^8.24.0",
-    "eslint": "^9.20.0",
     "fast-check": "^4.9.0",
-    "prettier": "^3.5.0",
     "tsx": "^4.19.3",
     "typescript": "~5.8.3",
-    "typescript-eslint": "^8.24.0",
     "vitest": "^5.0.0"
   }
 }

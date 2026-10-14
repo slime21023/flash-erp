@@ -61,16 +61,15 @@ jobs:
           TEST_DB_DATABASE: flash_erp_test
         run: npm run test:integration
 
-      - name: ESLint
+      - name: Biome Lint and Svelte Checks
         run: npm run lint
 
-      - name: Prettier Format Check
+      - name: Biome Format Check
         run: npm run format:check
 
       - name: Build Backend & Frontend
         run: |
           npm run build
-          npm run check -w frontend
           npm run build -w frontend
 
       - name: Build Production Images

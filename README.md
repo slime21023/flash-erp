@@ -106,6 +106,7 @@ docker compose up -d postgres
 
 # 4. 執行品質守衛與測試
 npm run architecture:check
+npm run check:code
 npm test
 npm run test:integration
 
@@ -156,6 +157,21 @@ Client 自動攜帶 Cookie 與 CSRF header；可按呼叫覆寫組織作用域�
 契約與文件同步更新：新增 procedure 時在模組的純 API 契約使用共用 schemas，在 Controller 使用 `@Implement` 與獨立權限，並將領域 `Result` 交給 `unwrapResult`。新模組可用 `npm run make:module <module_name>` 建立，產生器包含空 API 契約而不建立 DTO。版本固定使用穩定的 oRPC 1.15.5 與 Valibot 1.5.0，參考 [oRPC v1 NestJS 整合](https://v1.orpc.dev/docs/openapi/integrations/implement-contract-in-nest) 及 [Valibot 整合](https://v1.orpc.dev/docs/integrations/valibot)，避免混用 beta API。
 
 前後端必須使用同一版本的 API 契約一起發版；此次遷移不變更資料表，不需要資料 migration。
+
+### 程式碼格式與 lint
+
+前後端共用根目錄 `biome.json`，使用固定版本 Biome 2.5.15 取代 ESLint／Prettier：
+
+```bash
+npm run format       # 套用格式
+npm run lint         # Biome lint + Svelte／前端檢查，不修改檔案
+npm run format:check # 檢查格式，不修改檔案
+npm run check:code   # 格式、lint 與 Svelte／前端檢查
+```
+
+格式保留兩格縮排、JavaScript 單引號、100 字寬及僅在必要時使用分號。支援 JavaScript／TypeScript、JSON／JSONC、CSS、HTML 與 Svelte；輸出目錄、依賴、lockfile 與 SVG 資產不處理。Markdown／YAML 目前不受 Biome 支援，仍手動維護。
+
+Svelte 的型別與元件診斷交由 `svelte-check`；Biome 不對 `.svelte` 執行 lint，只負責格式化。`npm run lint` 與 `npm run check:code` 都會執行前端 `check` script，也可單獨使用 `npm run check -w frontend`。Biome 的 Svelte parser／formatter 仍屬上游實驗性功能；後端型別與模組邊界仍由 `npm run typecheck`、`npm run architecture:check` 檢查。規則範圍與編輯器設定請參考 [CONTRIBUTING.md](CONTRIBUTING.md#formatting--linting)。
 
 ---
 

@@ -15,6 +15,18 @@ The dev server runs on `http://localhost:5173` and proxies the backend at `http:
 
 The backend must be running and an admin user must exist. Follow the root [README](../README.md) for PostgreSQL, migrations, and bootstrap instructions.
 
+## Code quality
+
+From the repository root:
+
+```bash
+npm run check:code
+npm run format
+npm run check -w frontend
+```
+
+The root Biome configuration formats frontend TypeScript, CSS, HTML, and complete Svelte components, including embedded scripts and styles. Biome lint is disabled for `.svelte` files; `svelte-check` handles their type and component diagnostics. Root `lint` and `check:code` both invoke the frontend `check` script, which also typechecks the Vite configuration. Run `npm run check -w frontend` for these frontend checks alone. Biome's Svelte parser and formatter remain experimental. Markdown, YAML, and SVG assets are outside the Biome formatting scope. See [CONTRIBUTING.md](../CONTRIBUTING.md#formatting--linting) for the shared rules and editor setup.
+
 ## Production build
 
 ```bash
