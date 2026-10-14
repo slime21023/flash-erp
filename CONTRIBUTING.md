@@ -31,6 +31,9 @@ Before writing or submitting any code, you **must strictly adhere** to the follo
 5. **Property-Based Testing (PBT)**:
    - Core algorithms, monetary allocations, and accounting invariants must include property-based tests using `fast-check` with at least 1,000 runs per property.
 
+6. **Shared Terminology**:
+   - Use the [FlashERP glossary](docs/terminology.md) for agreed business concepts. It is concept-first, not a mirror of class, field, or API names. Do not add overloaded or implementation-specific terms just because they exist in the code; document a local code-to-domain mapping beside the relevant technical interface instead.
+
 ---
 
 ## 3. Development Workflow

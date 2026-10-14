@@ -4,6 +4,8 @@
 
 Run one backend container and one frontend container on a single host. PostgreSQL is an external or managed PostgreSQL 16 instance; do not expose the database publicly. This is the supported RPO 24 hours / RTO 4 hours deployment profile.
 
+For shared business terminology, see the [FlashERP glossary](../terminology.md). Technical operating terms are defined here alongside the relevant procedures.
+
 Before the first deployment:
 
 1. Create a production `.env` from `.env.example` with a unique database password. Leave `VITE_API_URL` empty for the bundled same-origin Nginx proxy; set it to the public API URL only when the API is hosted separately.

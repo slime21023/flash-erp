@@ -73,6 +73,8 @@ FlashERP/
 
 各領域的 `contracts/<module>_api_contract.ts` 定義 oRPC procedures 與 Valibot schemas，由 `src/api_contract.ts` 聚合供前後端共用。內部抽象 Contract 維持 NestJS DI 與 `Result<T, DomainError>`；API 契約的匯入圖由架構檢查限制為瀏覽器可用的純定義。
 
+開發與使用者溝通所需的核心業務概念，統一收錄於 [FlashERP 核心術語表](docs/terminology.md)。
+
 ---
 
 ### 🚀 快速上手指南 (Quickstart)
